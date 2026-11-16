@@ -1,0 +1,371 @@
+//@version=6
+strategy("SMC Pro · Estrategia (OB HTF + CHoCH)", shorttitle = "SMC Pro Estrategia", overlay = true, initial_capital = 200, currency = currency.USD, default_qty_type = strategy.fixed, default_qty_value = 1, commission_type = strategy.commission.percent, commission_value = 0.05, slippage = 2, pyramiding = 0, margin_long = 10, margin_short = 10, process_orders_on_close = false, calc_on_every_tick = false, max_bars_back = 500, max_boxes_count = 50, max_lines_count = 100, max_labels_count = 100)
+
+// =====================================================================
+// SMC Pro (estrategia para backtest). MISMO motor y MISMAS reglas que el indicador.
+// 1) Sesgo y OB en la TF superior (4H): el OB debe haber tomado liquidez y dejado FVG.
+// 2) El precio toca el 50% del OB sin cerrar al otro lado → setup ARMADO.
+// 3) CHoCH a favor en el gráfico (15m) en ≤ N velas → ENTRADA a mercado.
+// 4) SL detrás del OB (+ margen ATR). TP: 3R, siguiente liquidez o el más conservador.
+// 5) Tamaño por riesgo fijo (% del capital), limitado por el apalancamiento.
+// 6) Cierre forzado si la operación supera la duración máxima (48 h por defecto).
+// margin_long/short = 10 → el broker simulado permite hasta x10.
+// =====================================================================
+
+const string G_HTF = "Temporalidad superior (sesgo y OB)"
+const string G_EST = "Estructura (gráfico)"
+const string G_OB  = "Order Blocks"
+const string G_SET = "Modelo de entrada"
+const string G_RSK = "Gestión de riesgo"
+
+htfTf      = input.timeframe("240", "Temporalidad superior", group = G_HTF)
+htfLen     = input.int(5, "Longitud de pivote TF superior", minval = 2, maxval = 50, group = G_HTF)
+intLen     = input.int(5, "Longitud de pivote (estructura interna)", minval = 2, maxval = 50, group = G_EST)
+reqSweep   = input.bool(true, "Exigir toma de liquidez previa", group = G_OB)
+reqFvg     = input.bool(true, "Exigir FVG en el desplazamiento", group = G_OB)
+scanMax    = input.int(100, "Velas máximas a escanear para buscar el OB", minval = 10, maxval = 300, group = G_OB)
+eqTol      = input.float(0.1, "Tolerancia EQH / EQL (× ATR 14)", minval = 0.01, step = 0.01, group = G_OB)
+
+usarSesgo  = input.bool(true, "Operar solo a favor del sesgo de la TF superior", group = G_SET)
+soloChoch  = input.bool(true, "Confirmación solo con CHoCH (si no, también BOS)", group = G_SET)
+maxEspera  = input.int(48, "Velas máximas entre toque del 50% y confirmación", minval = 1, group = G_SET)
+dirOp      = input.string("Ambas", "Dirección", options = ["Ambas", "Solo largos", "Solo cortos"], group = G_SET)
+
+slBuf      = input.float(0.2, "Margen del stop detrás del OB (× ATR 14)", minval = 0.0, step = 0.05, group = G_RSK)
+rr         = input.float(3.0, "Relación R:B objetivo", minval = 1.0, step = 0.5, group = G_RSK)
+minRR      = input.float(2.0, "R:B mínimo para aceptar la operación", minval = 0.5, step = 0.5, group = G_RSK)
+modoTP     = input.string("Más conservador", "Objetivo (TP)", options = ["3R fijo", "Siguiente liquidez", "Más conservador"], group = G_RSK)
+riesgoPct  = input.float(1.0, "Riesgo por operación (% del capital)", minval = 0.1, maxval = 10, step = 0.1, group = G_RSK)
+apal       = input.int(5, "Apalancamiento máximo", minval = 1, maxval = 10, group = G_RSK)
+maxHoras   = input.int(48, "Duración máxima de la operación (horas)", minval = 1, group = G_RSK)
+enteras    = input.bool(false, "Cantidad en unidades enteras (acciones)", group = G_RSK)
+desde      = input.time(timestamp("2024-01-01T00:00:00"), "Backtest desde", group = G_RSK)
+
+colBull    = input.color(#14532D, "OB alcista TF superior", group = "Colores")
+colBear    = input.color(#5B1A1A, "OB bajista TF superior", group = "Colores")
+colTxt     = input.color(#B2B5BE, "Texto / 50%", group = "Colores")
+
+// ---------------------------------------------------------------------
+// 2. MOTOR SMC (estructura, liquidez y Order Blocks)
+//    Se usa en el gráfico y dentro de request.security para la TF superior.
+// ---------------------------------------------------------------------
+f_smc(simple int len, bool needSweep, bool needFvg, simple int maxScan, float tol, array<float> hP, array<int> hI, array<float> lP, array<int> lI) =>
+    var int   trend   = 0
+    var float swHi    = na
+    var int   swHiIdx = na
+    var bool  swHiOn  = false
+    var float swLo    = na
+    var int   swLoIdx = na
+    var bool  swLoOn  = false
+    var int   bslIdx  = na
+    var int   sslIdx  = na
+    var float bTop    = na
+    var float bBot    = na
+    var int   bIdx    = na
+    var int   bTime   = na
+    var float sTop    = na
+    var float sBot    = na
+    var int   sIdx    = na
+    var int   sTime   = na
+
+    float atr = ta.atr(14)
+    float ph  = ta.pivothigh(high, len, len)
+    float pl  = ta.pivotlow(low, len, len)
+
+    int   evt     = 0
+    float evtLvl  = na
+    int   evtFrom = na
+    bool  bNew    = false
+    bool  sNew    = false
+    bool  bslSw   = false
+    float bslLvl  = na
+    int   bslFrom = na
+    bool  sslSw   = false
+    float sslLvl  = na
+    int   sslFrom = na
+    float eqhLvl  = na
+    int   eqhFrom = na
+    float eqlLvl  = na
+    int   eqlFrom = na
+
+    // --- Liquidez tomada: swings no tomados que el precio supera ---
+    int nH = array.size(hP)
+    if nH > 0
+        for k = nH - 1 to 0
+            float p = array.get(hP, k)
+            if high > p
+                bslIdx := bar_index
+                if na(bslLvl) or p > bslLvl
+                    bslLvl  := p
+                    bslFrom := array.get(hI, k)
+                array.remove(hP, k)
+                array.remove(hI, k)
+    // Barrido = la mecha toma el nivel pero la vela cierra de vuelta
+    bslSw := not na(bslLvl) and close < bslLvl
+
+    int nL = array.size(lP)
+    if nL > 0
+        for k = nL - 1 to 0
+            float p = array.get(lP, k)
+            if low < p
+                sslIdx := bar_index
+                if na(sslLvl) or p < sslLvl
+                    sslLvl  := p
+                    sslFrom := array.get(lI, k)
+                array.remove(lP, k)
+                array.remove(lI, k)
+    sslSw := not na(sslLvl) and close > sslLvl
+
+    // --- Nuevos swings confirmados → pools de liquidez + EQH / EQL ---
+    if not na(ph)
+        int pIdx = bar_index - len
+        int n = array.size(hP)
+        if n > 0
+            for k = 0 to n - 1
+                if math.abs(ph - array.get(hP, k)) <= atr * tol
+                    eqhLvl  := ph
+                    eqhFrom := array.get(hI, k)
+        array.push(hP, ph)
+        array.push(hI, pIdx)
+        if array.size(hP) > 40
+            array.shift(hP)
+            array.shift(hI)
+        swHi    := ph
+        swHiIdx := pIdx
+        swHiOn  := true
+
+    if not na(pl)
+        int pIdx = bar_index - len
+        int n = array.size(lP)
+        if n > 0
+            for k = 0 to n - 1
+                if math.abs(pl - array.get(lP, k)) <= atr * tol
+                    eqlLvl  := pl
+                    eqlFrom := array.get(lI, k)
+        array.push(lP, pl)
+        array.push(lI, pIdx)
+        if array.size(lP) > 40
+            array.shift(lP)
+            array.shift(lI)
+        swLo    := pl
+        swLoIdx := pIdx
+        swLoOn  := true
+
+    // --- Mitigación del OB activo: cierre al otro lado ---
+    if not na(bBot) and close < bBot
+        bTop  := na
+        bBot  := na
+        bIdx  := na
+        bTime := na
+    if not na(sTop) and close > sTop
+        sTop  := na
+        sBot  := na
+        sIdx  := na
+        sTime := na
+
+    // --- Ruptura alcista (BOS / CHoCH) por cierre ---
+    if swHiOn and close > swHi
+        evt     := trend < 0 ? 2 : 1
+        evtLvl  := swHi
+        evtFrom := swHiIdx
+        trend   := 1
+        swHiOn  := false
+        int   span = math.min(bar_index - swHiIdx, maxScan)
+        float cT   = na
+        float cB   = na
+        int   cOff = na
+        // Última vela bajista del tramo (la de mínimo más bajo = origen del impulso)
+        for i = 1 to span
+            if close[i] < open[i] and (na(cB) or low[i] < cB)
+                cB   := low[i]
+                cT   := high[i]
+                cOff := i
+        if not na(cOff)
+            bool fvgOk = false
+            if cOff >= 2
+                for j = 0 to cOff - 2
+                    if low[j] > high[j + 2]
+                        fvgOk := true
+                        break
+            bool sweepOk = not na(sslIdx) and sslIdx >= swHiIdx
+            if (not needFvg or fvgOk) and (not needSweep or sweepOk)
+                bTop  := cT
+                bBot  := cB
+                bIdx  := bar_index - cOff
+                bTime := time[cOff]
+                bNew  := true
+
+    // --- Ruptura bajista (BOS / CHoCH) por cierre ---
+    if swLoOn and close < swLo
+        evt     := trend > 0 ? -2 : -1
+        evtLvl  := swLo
+        evtFrom := swLoIdx
+        trend   := -1
+        swLoOn  := false
+        int   span = math.min(bar_index - swLoIdx, maxScan)
+        float cT   = na
+        float cB   = na
+        int   cOff = na
+        for i = 1 to span
+            if close[i] > open[i] and (na(cT) or high[i] > cT)
+                cT   := high[i]
+                cB   := low[i]
+                cOff := i
+        if not na(cOff)
+            bool fvgOk = false
+            if cOff >= 2
+                for j = 0 to cOff - 2
+                    if high[j] < low[j + 2]
+                        fvgOk := true
+                        break
+            bool sweepOk = not na(bslIdx) and bslIdx >= swLoIdx
+            if (not needFvg or fvgOk) and (not needSweep or sweepOk)
+                sTop  := cT
+                sBot  := cB
+                sIdx  := bar_index - cOff
+                sTime := time[cOff]
+                sNew  := true
+
+    [trend, evt, evtLvl, evtFrom, bNew, bTop, bBot, bIdx, bTime, sNew, sTop, sBot, sIdx, sTime, bslSw, bslLvl, bslFrom, sslSw, sslLvl, sslFrom, eqhLvl, eqhFrom, eqlLvl, eqlFrom, atr]
+
+// Envoltorio para la TF superior: devuelve la vela HTF ya CERRADA (sin repintado)
+f_htf(simple int len, bool needSweep, bool needFvg, simple int maxScan, float tol) =>
+    var array<float> hp = array.new<float>()
+    var array<int>   hx = array.new<int>()
+    var array<float> lp = array.new<float>()
+    var array<int>   lx = array.new<int>()
+    [t, e, el, ef, bn, bt, bb, bi, btm, sn, st, sb, si, stm, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, a] = f_smc(len, needSweep, needFvg, maxScan, tol, hp, hx, lp, lx)
+    [t[1], bt[1], bb[1], btm[1], st[1], sb[1], stm[1]]
+
+// Liquidez objetivo: swing no tomado más cercano más allá de un umbral
+f_liq(array<float> pool, float thr, bool up) =>
+    float best = na
+    int n = array.size(pool)
+    if n > 0 and not na(thr)
+        for k = 0 to n - 1
+            float p = array.get(pool, k)
+            if up and p >= thr and (na(best) or p < best)
+                best := p
+            if not up and p <= thr and (na(best) or p > best)
+                best := p
+    best
+
+f_trendTxt(int t) =>
+    t == 1 ? "Alcista ▲" : t == -1 ? "Bajista ▼" : "Neutral"
+
+// ---------------------------------------------------------------------
+// 3. CÁLCULOS
+// ---------------------------------------------------------------------
+var array<float> lqHiP = array.new<float>()
+var array<int>   lqHiI = array.new<int>()
+var array<float> lqLoP = array.new<float>()
+var array<int>   lqLoI = array.new<int>()
+
+[trend, evt, evtLvl, evtFrom, bNew, bTop, bBot, bIdx, bTime, sNew, sTop, sBot, sIdx, sTime, bslSw, bslLvl, bslFrom, sslSw, sslLvl, sslFrom, eqhLvl, eqhFrom, eqlLvl, eqlFrom, atrL] = f_smc(intLen, reqSweep, reqFvg, scanMax, eqTol, lqHiP, lqHiI, lqLoP, lqLoI)
+
+[hTrend, hBT, hBB, hBTm, hST, hSB, hSTm] = request.security(syminfo.tickerid, htfTf, f_htf(htfLen, reqSweep, reqFvg, scanMax, eqTol), lookahead = barmerge.lookahead_on)
+
+float hBMid = (hBT + hBB) / 2
+float hSMid = (hST + hSB) / 2
+bool  tfOk  = timeframe.in_seconds() < timeframe.in_seconds(htfTf)
+
+// ---------------------------------------------------------------------
+// 4. MODELO DE ENTRADA (idéntico al indicador)
+// ---------------------------------------------------------------------
+var bool armL    = false
+var int  armLBar = na
+var int  armLOb  = na
+var int  usedLOb = na
+var bool armS    = false
+var int  armSBar = na
+var int  armSOb  = na
+var int  usedSOb = na
+
+if armL and (na(hBTm) or hBTm != armLOb or close < hBB or bar_index - armLBar > maxEspera)
+    armL := false
+if armS and (na(hSTm) or hSTm != armSOb or close > hST or bar_index - armSBar > maxEspera)
+    armS := false
+
+bool toqueL = not na(hBTm) and (na(usedLOb) or hBTm != usedLOb) and low <= hBMid and close >= hBB
+bool toqueS = not na(hSTm) and (na(usedSOb) or hSTm != usedSOb) and high >= hSMid and close <= hST
+
+if not armL and toqueL
+    armL    := true
+    armLBar := bar_index
+    armLOb  := hBTm
+if not armS and toqueS
+    armS    := true
+    armSBar := bar_index
+    armSOb  := hSTm
+
+bool confL  = soloChoch ? evt == 2 : evt > 0
+bool confS  = soloChoch ? evt == -2 : evt < 0
+bool sesgoL = not usarSesgo or hTrend == 1
+bool sesgoS = not usarSesgo or hTrend == -1
+
+float slL   = hBB - atrL * slBuf
+float riskL = close - slL
+float tpL3  = close + rr * riskL
+float liqL  = f_liq(lqHiP, close + minRR * riskL, true)
+float tpL   = modoTP == "3R fijo" ? tpL3 : na(liqL) ? tpL3 : modoTP == "Siguiente liquidez" ? liqL : math.min(tpL3, liqL)
+
+float slS   = hST + atrL * slBuf
+float riskS = slS - close
+float tpS3  = close - rr * riskS
+float liqS  = f_liq(lqLoP, close - minRR * riskS, false)
+float tpS   = modoTP == "3R fijo" ? tpS3 : na(liqS) ? tpS3 : modoTP == "Siguiente liquidez" ? liqS : math.max(tpS3, liqS)
+
+float liqDist = 100.0 / apal * 0.8
+bool okL = riskL > 0 and (tpL - close) / riskL >= minRR and riskL / close * 100 < liqDist
+bool okS = riskS > 0 and (close - tpS) / riskS >= minRR and riskS / close * 100 < liqDist
+
+bool senalL = tfOk and armL and confL and sesgoL and okL
+bool senalS = tfOk and armS and confS and sesgoS and okS
+
+if senalL
+    usedLOb := armLOb
+    armL    := false
+if senalS
+    usedSOb := armSOb
+    armS    := false
+
+// ---------------------------------------------------------------------
+// 5. ÓRDENES
+// ---------------------------------------------------------------------
+bool enRango = time >= desde
+bool plano   = strategy.position_size == 0
+
+f_qty(float risk) =>
+    float q = strategy.equity * riesgoPct / 100 / risk
+    q := math.min(q, strategy.equity * apal / close)
+    enteras ? float(math.floor(q)) : q
+
+if enRango and plano and senalL and dirOp != "Solo cortos"
+    float q = f_qty(riskL)
+    if q > 0
+        strategy.entry("Largo", strategy.long, qty = q, comment = "OB " + str.tostring(hBB, format.mintick))
+        strategy.exit("Salida L", from_entry = "Largo", stop = slL, limit = tpL, comment_loss = "SL", comment_profit = "TP")
+
+if enRango and plano and senalS and dirOp != "Solo largos"
+    float q = f_qty(riskS)
+    if q > 0
+        strategy.entry("Corto", strategy.short, qty = q, comment = "OB " + str.tostring(hST, format.mintick))
+        strategy.exit("Salida C", from_entry = "Corto", stop = slS, limit = tpS, comment_loss = "SL", comment_profit = "TP")
+
+// Cierre por tiempo máximo
+if strategy.position_size != 0
+    int t0 = strategy.opentrades.entry_time(strategy.opentrades - 1)
+    if time - t0 >= maxHoras * 3600000
+        strategy.close_all(comment = "Tiempo máx.")
+
+// ---------------------------------------------------------------------
+// 6. VISUAL MÍNIMO
+// ---------------------------------------------------------------------
+plot(hBT, "OB alcista techo", color = colBull, style = plot.style_linebr, linewidth = 2)
+plot(hBB, "OB alcista base", color = colBull, style = plot.style_linebr, linewidth = 2)
+plot(hBMid, "OB alcista 50%", color = colTxt, style = plot.style_linebr)
+plot(hST, "OB bajista techo", color = colBear, style = plot.style_linebr, linewidth = 2)
+plot(hSB, "OB bajista base", color = colBear, style = plot.style_linebr, linewidth = 2)
+plot(hSMid, "OB bajista 50%", color = colTxt, style = plot.style_linebr)
+plotshape(armL, "Armado largo", shape.circle, location.belowbar, color.new(colBull, 40), size = size.tiny)
+plotshape(armS, "Armado corto", shape.circle, location.abovebar, color.new(colBear, 40), size = size.tiny)
