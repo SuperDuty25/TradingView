@@ -25,6 +25,11 @@ const string G_PD  = "Premium / Discount y OTE"
 const string G_KZ  = "Killzones (sesiones)"
 const string G_SET = "Modelo de entrada"
 const string G_RSK = "Gestión de riesgo"
+const string G_OPP = "Panel ¿Hay oportunidad?"
+
+showOpp    = input.bool(true, "Mostrar panel ¿Hay oportunidad?", group = G_OPP)
+oppPosTxt  = input.string("Arriba derecha", "Posición del panel", options = ["Arriba derecha", "Arriba izquierda", "Abajo derecha", "Abajo izquierda"], group = G_OPP)
+oppTamTxt  = input.string("Normal", "Tamaño del texto", options = ["Pequeño", "Normal", "Grande"], group = G_OPP)
 
 htfTf      = input.timeframe("240", "Temporalidad superior", group = G_HTF)
 htfLen     = input.int(5, "Longitud de pivote TF superior", minval = 2, maxval = 50, group = G_HTF, tooltip = "Velas a cada lado para confirmar un swing en la TF superior. En 4H, 5 = el swing se confirma 20 horas después.")
@@ -489,6 +494,7 @@ f_qty(float risk) =>
     q := math.min(q, strategy.equity * apal / close)
     enteras ? float(math.floor(q)) : q
 
+var float pSL   = na
 var float pTP   = na
 var float pRisk = na
 var bool  pBE   = false
@@ -498,6 +504,7 @@ if enRango and senalL and dirOp != "Solo cortos"
     if q > 0
         strategy.entry("Largo", strategy.long, qty = q)
         strategy.exit("Salida L", from_entry = "Largo", stop = slL, limit = tpL, comment_loss = "SL", comment_profit = "TP")
+        pSL   := slL
         pTP   := tpL
         pRisk := riskL
         pBE   := false
@@ -507,6 +514,7 @@ if enRango and senalS and dirOp != "Solo largos"
     if q > 0
         strategy.entry("Corto", strategy.short, qty = q)
         strategy.exit("Salida C", from_entry = "Corto", stop = slS, limit = tpS, comment_loss = "SL", comment_profit = "TP")
+        pSL   := slS
         pTP   := tpS
         pRisk := riskS
         pBE   := false
@@ -516,9 +524,11 @@ if usarBE and not pBE and strategy.position_size != 0
     float ep = strategy.position_avg_price
     if strategy.position_size > 0 and high >= ep + beR * pRisk
         pBE := true
+        pSL := ep + beOff * pRisk
         strategy.exit("Salida L", from_entry = "Largo", stop = ep + beOff * pRisk, limit = pTP, comment_loss = "BE", comment_profit = "TP")
     if strategy.position_size < 0 and low <= ep - beR * pRisk
         pBE := true
+        pSL := ep - beOff * pRisk
         strategy.exit("Salida C", from_entry = "Corto", stop = ep - beOff * pRisk, limit = pTP, comment_loss = "BE", comment_profit = "TP")
 
 // Cierre por tiempo máximo
@@ -538,3 +548,145 @@ plot(hS1B, "OB bajista base", color = colBear, style = plot.style_linebr, linewi
 plot((hS1T + hS1B) / 2, "OB bajista 50%", color = colTxt, style = plot.style_linebr)
 plotshape(armL, "Armado largo", shape.circle, location.belowbar, color.new(colBull, 40), size = size.tiny)
 plotshape(armS, "Armado corto", shape.circle, location.abovebar, color.new(colBear, 40), size = size.tiny)
+
+// Estado de la posición para el panel de oportunidad
+int   posDir = strategy.position_size > 0 ? 1 : strategy.position_size < 0 ? -1 : 0
+float posEnt = strategy.position_avg_price
+float posSL  = pSL
+float posTP  = pTP
+bool  posBE  = pBE
+
+// ---------------------------------------------------------------------
+// 11. PANEL "¿HAY OPORTUNIDAD?" (lenguaje sencillo)
+// ---------------------------------------------------------------------
+color cOppVerde = #1F7A63
+color cOppRojo  = #8E2F3C
+color cOppAmbar = #7A5E1A
+color cOppGris  = #2A2E39
+color cOppFondo = #131722
+color cOppTexto = #D1D4DC
+
+// Zona de compra (o venta) válida más cercana al precio actual
+f_cercana(array<float> tops, array<float> bots, array<int> tms, int nS, bool up) =>
+    float rt = na
+    float rb = na
+    for k = 0 to nS - 1
+        float t  = array.get(tops, k)
+        float b  = array.get(bots, k)
+        int   tm = array.get(tms, k)
+        if not na(tm)
+            if up and b <= close and (na(rt) or t > rt)
+                rt := t
+                rb := b
+            if not up and t >= close and (na(rb) or b < rb)
+                rt := t
+                rb := b
+    [rt, rb]
+
+f_px(float v) =>
+    na(v) ? "—" : str.tostring(v, format.mintick)
+
+[zcT, zcB] = f_cercana(hBTs, hBBs, hBMs, nSlots, true)
+[zvT, zvB] = f_cercana(hSTs, hSBs, hSMs, nSlots, false)
+
+// Avisos: confirmaciones que aparecieron pero se descartaron (se muestran 8 velas)
+var string aviso    = ""
+var int    avisoBar = na
+if armL and confL and sesgoL and not senalL
+    aviso    := not plano ? "Hubo confirmación de LONG, pero ya hay una operación abierta." : not kzOk ? "Hubo confirmación de LONG fuera del horario elegido: descartada." : "Hubo confirmación de LONG, pero el beneficio posible es pequeño para el riesgo (o el stop queda muy lejos): descartada."
+    avisoBar := bar_index
+if armS and confS and sesgoS and not senalS
+    aviso    := not plano ? "Hubo confirmación de SHORT, pero ya hay una operación abierta." : not kzOk ? "Hubo confirmación de SHORT fuera del horario elegido: descartada." : "Hubo confirmación de SHORT, pero el beneficio posible es pequeño para el riesgo (o el stop queda muy lejos): descartada."
+    avisoBar := bar_index
+
+string oppPos = oppPosTxt == "Arriba izquierda" ? position.top_left : oppPosTxt == "Abajo derecha" ? position.bottom_right : oppPosTxt == "Abajo izquierda" ? position.bottom_left : position.top_right
+string oppTam = oppTamTxt == "Pequeño" ? size.small : oppTamTxt == "Grande" ? size.large : size.normal
+
+var table opp = table.new(oppPos, 2, 10, bgcolor = cOppFondo, border_color = cOppGris, border_width = 1, frame_color = cOppGris, frame_width = 2)
+
+if showOpp and barstate.islast
+    string htfN  = htfTf == "240" ? "4H" : htfTf
+    string nota  = barstate.isconfirmed ? "" : "\n(Espera al cierre de la vela para confirmar)"
+    string est   = ""
+    string que   = ""
+    color  cEst  = cOppGris
+    float  vE    = na
+    float  vS    = na
+    float  vT    = na
+    if not tfOk
+        est  := "⚠ CAMBIA EL GRÁFICO"
+        que  := "Pon el gráfico en 15 minutos (debe ser menor que " + htfN + ")."
+        cEst := cOppAmbar
+    else if senalL
+        est  := "🟢 ABRIR LONG (COMPRA)"
+        que  := "Compra ahora y coloca el Stop y el Objetivo de abajo." + nota
+        cEst := cOppVerde
+        vE   := close
+        vS   := slL
+        vT   := tpL
+    else if senalS
+        est  := "🔴 ABRIR SHORT (VENTA)"
+        que  := "Vende ahora y coloca el Stop y el Objetivo de abajo." + nota
+        cEst := cOppRojo
+        vE   := close
+        vS   := slS
+        vT   := tpS
+    else if posDir == 1
+        est  := "📈 LONG ABIERTO"
+        que  := posBE ? "El stop ya está en la entrada (sin riesgo). Deja correr hasta el objetivo." : "Mantén la operación. No muevas el Stop ni el Objetivo."
+        cEst := cOppVerde
+        vE   := posEnt
+        vS   := posSL
+        vT   := posTP
+    else if posDir == -1
+        est  := "📉 SHORT ABIERTO"
+        que  := posBE ? "El stop ya está en la entrada (sin riesgo). Deja correr hasta el objetivo." : "Mantén la operación. No muevas el Stop ni el Objetivo."
+        cEst := cOppRojo
+        vE   := posEnt
+        vS   := posSL
+        vT   := posTP
+    else if armL and sesgoL
+        est  := "⏳ POSIBLE LONG"
+        que  := "El precio está en la zona de compra. TODAVÍA NO ENTRES: espera la señal de confirmación."
+        cEst := cOppAmbar
+    else if armS and sesgoS
+        est  := "⏳ POSIBLE SHORT"
+        que  := "El precio está en la zona de venta. TODAVÍA NO ENTRES: espera la señal de confirmación."
+        cEst := cOppAmbar
+    else if armL or armS
+        est  := "⚠ ZONA TOCADA, CONTRA TENDENCIA"
+        que  := "El precio tocó una zona, pero va en contra de la tendencia de " + htfN + ". No operar."
+        cEst := cOppGris
+    else
+        est  := "⚪ SIN OPORTUNIDAD"
+        que  := "No hagas nada. Espera a que el precio llegue a una zona de compra o de venta."
+        cEst := cOppGris
+
+    string tend = hTrend == 1 ? "Alcista → buscar solo LONG" : hTrend == -1 ? "Bajista → buscar solo SHORT" : "Sin dirección clara"
+    if not usarSesgo
+        tend := tend + " (filtro desactivado)"
+    string zc = na(zcB) ? "Ninguna activa" : f_px(zcB) + " – " + f_px(zcT)
+    string zv = na(zvB) ? "Ninguna activa" : f_px(zvB) + " – " + f_px(zvT)
+    string av = not na(avisoBar) and bar_index - avisoBar <= 8 ? aviso : "—"
+    string rb = na(vE) or na(vS) or na(vT) or vE == vS ? "—" : "1 : " + str.tostring(math.abs(vT - vE) / math.abs(vE - vS), "#.#")
+
+    table.cell(opp, 0, 0, "¿HAY OPORTUNIDAD?", text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 1, 0, syminfo.ticker + " · " + (timeframe.isminutes ? timeframe.period + "m" : timeframe.period), text_color = cOppTexto, text_size = oppTam, text_halign = text.align_right)
+    table.cell(opp, 0, 1, "Estado", text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 1, 1, est, text_color = color.white, bgcolor = cEst, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 0, 2, "Qué hacer", text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 1, 2, que, text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 0, 3, "Tendencia " + htfN, text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 1, 3, tend, text_color = hTrend == 1 ? cOppVerde : hTrend == -1 ? cOppRojo : cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 0, 4, "Zona de compra", text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 1, 4, zc, text_color = cOppVerde, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 0, 5, "Zona de venta", text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 1, 5, zv, text_color = cOppRojo, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 0, 6, "Entrada", text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 1, 6, f_px(vE), text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 0, 7, "Stop (SL)", text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 1, 7, f_px(vS), text_color = cOppRojo, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 0, 8, "Objetivo (TP)", text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 1, 8, f_px(vT) + (rb == "—" ? "" : "   (riesgo : beneficio " + rb + ")"), text_color = cOppVerde, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 0, 9, "Aviso", text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 1, 9, av, text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)

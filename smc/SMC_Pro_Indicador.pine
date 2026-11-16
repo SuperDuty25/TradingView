@@ -23,6 +23,11 @@ const string G_PD  = "Premium / Discount y OTE"
 const string G_KZ  = "Killzones (sesiones)"
 const string G_SET = "Modelo de entrada"
 const string G_RSK = "Gestión de riesgo"
+const string G_OPP = "Panel ¿Hay oportunidad?"
+
+showOpp    = input.bool(true, "Mostrar panel ¿Hay oportunidad?", group = G_OPP)
+oppPosTxt  = input.string("Arriba derecha", "Posición del panel", options = ["Arriba derecha", "Arriba izquierda", "Abajo derecha", "Abajo izquierda"], group = G_OPP)
+oppTamTxt  = input.string("Normal", "Tamaño del texto", options = ["Pequeño", "Normal", "Grande"], group = G_OPP)
 
 htfTf      = input.timeframe("240", "Temporalidad superior", group = G_HTF)
 htfLen     = input.int(5, "Longitud de pivote TF superior", minval = 2, maxval = 50, group = G_HTF, tooltip = "Velas a cada lado para confirmar un swing en la TF superior. En 4H, 5 = el swing se confirma 20 horas después.")
@@ -66,23 +71,32 @@ maxHoras   = input.int(48, "Duración máxima de la operación (horas)", minval 
 const string G_VIS = "Visualización"
 const string G_COL = "Colores (paleta oscura)"
 
+modoSimple = input.bool(true, "MODO SIMPLE (solo zonas, señales y panel)", group = G_VIS, tooltip = "Oculta los dibujos técnicos (estructura, FVG, liquidez, premium/discount, killzones). Desactívalo para ver todo.")
 showHtfOB  = input.bool(true, "Mostrar OB de la TF superior", group = G_VIS)
-showEstr   = input.bool(true, "Mostrar BOS / CHoCH", group = G_VIS)
-showOB     = input.bool(true, "Mostrar OB del gráfico", group = G_VIS)
+inEstr     = input.bool(true, "Mostrar BOS / CHoCH", group = G_VIS)
+inOB       = input.bool(true, "Mostrar OB del gráfico", group = G_VIS)
 showBRK    = input.bool(true, "Convertir OB mitigados en Breaker Blocks", group = G_VIS)
 maxOB      = input.int(5, "Máx. OB / breakers del gráfico por dirección", minval = 1, maxval = 30, group = G_VIS)
-showFVG    = input.bool(true, "Mostrar FVG", group = G_VIS)
+inFVG      = input.bool(true, "Mostrar FVG", group = G_VIS)
 showIFVG   = input.bool(true, "Convertir FVG mitigados en IFVG", group = G_VIS)
 fvgMinAtr  = input.float(0.25, "Tamaño mínimo del FVG (× ATR 14)", minval = 0.0, step = 0.05, group = G_VIS, tooltip = "Filtra huecos insignificantes. 0 = sin filtro.")
 fvgShrink  = input.bool(true, "Recortar FVG al rellenarse parcialmente", group = G_VIS)
 maxFVG     = input.int(10, "Máx. FVG / IFVG por dirección", minval = 1, maxval = 50, group = G_VIS)
-showLiq    = input.bool(true, "Mostrar EQH / EQL y barridos", group = G_VIS)
-showPD     = input.bool(true, "Mostrar Premium / Discount de la TF superior", group = G_VIS)
+inLiq      = input.bool(true, "Mostrar EQH / EQL y barridos", group = G_VIS)
+inPD       = input.bool(true, "Mostrar Premium / Discount de la TF superior", group = G_VIS)
 showOTE    = input.bool(true, "Mostrar banda OTE (62–79%)", group = G_VIS)
-showKZ     = input.bool(true, "Sombrear killzones", group = G_VIS)
+inKZsh     = input.bool(true, "Sombrear killzones", group = G_VIS)
 borrarMit  = input.bool(false, "Borrar zonas mitigadas (si no, quedan en gris)", group = G_VIS)
 showSig    = input.bool(true, "Mostrar señales y gestión", group = G_VIS)
-showPanel  = input.bool(true, "Mostrar panel", group = G_VIS)
+inPanel    = input.bool(true, "Mostrar panel técnico", group = G_VIS)
+
+bool showEstr  = inEstr and not modoSimple
+bool showOB    = inOB and not modoSimple
+bool showFVG   = inFVG and not modoSimple
+bool showLiq   = inLiq and not modoSimple
+bool showPD    = inPD and not modoSimple
+bool showKZ    = inKZsh and not modoSimple
+bool showPanel = inPanel and not modoSimple
 
 colObBull  = input.color(#0E5E4E, "OB alcista", group = G_COL)
 colObBear  = input.color(#7A1F2B, "OB bajista", group = G_COL)
@@ -558,9 +572,9 @@ if senalL or senalS
         vTPLn := line.new(bar_index, vTP, bar_index + 1, vTP, color = colEstBull, width = 1)
 
 if showSig and senalL
-    label.new(bar_index, low, "COMPRA\nSL " + str.tostring(slL, format.mintick) + "\nTP " + str.tostring(tpL, format.mintick) + "\nR:B " + str.tostring((tpL - close) / riskL, "#.##"), yloc = yloc.belowbar, style = label.style_label_up, color = colObBull, textcolor = color.white, size = size.small)
+    label.new(bar_index, low, "COMPRA (LONG)\nSL " + str.tostring(slL, format.mintick) + "\nTP " + str.tostring(tpL, format.mintick) + "\nR:B " + str.tostring((tpL - close) / riskL, "#.##"), yloc = yloc.belowbar, style = label.style_label_up, color = colObBull, textcolor = color.white, size = size.small)
 if showSig and senalS
-    label.new(bar_index, high, "VENTA\nSL " + str.tostring(slS, format.mintick) + "\nTP " + str.tostring(tpS, format.mintick) + "\nR:B " + str.tostring((close - tpS) / riskS, "#.##"), yloc = yloc.abovebar, style = label.style_label_down, color = colObBear, textcolor = color.white, size = size.small)
+    label.new(bar_index, high, "VENTA (SHORT)\nSL " + str.tostring(slS, format.mintick) + "\nTP " + str.tostring(tpS, format.mintick) + "\nR:B " + str.tostring((close - tpS) / riskS, "#.##"), yloc = yloc.abovebar, style = label.style_label_down, color = colObBear, textcolor = color.white, size = size.small)
 if showSig and evBE
     label.new(bar_index, close, "SL → BE", yloc = yloc.abovebar, style = label.style_label_down, color = colMit, textcolor = colTxt, size = size.tiny)
 if showSig and vRes != ""
@@ -725,8 +739,8 @@ var array<line> hbLn  = array.new<line>(3)
 var array<box>  hsBox = array.new<box>(3)
 var array<line> hsLn  = array.new<line>(3)
 
-f_htfDraw(hbBox, hbLn, hBTs, hBBs, hBMs, nSlots, colHtfBull, "OB " + htfName, colTxt, time + 5 * tfMs, showHtfOB)
-f_htfDraw(hsBox, hsLn, hSTs, hSBs, hSMs, nSlots, colHtfBear, "OB " + htfName, colTxt, time + 5 * tfMs, showHtfOB)
+f_htfDraw(hbBox, hbLn, hBTs, hBBs, hBMs, nSlots, colHtfBull, modoSimple ? "Zona de COMPRA " + htfName : "OB " + htfName, colTxt, time + 5 * tfMs, showHtfOB)
+f_htfDraw(hsBox, hsLn, hSTs, hSBs, hSMs, nSlots, colHtfBear, modoSimple ? "Zona de VENTA " + htfName : "OB " + htfName, colTxt, time + 5 * tfMs, showHtfOB)
 
 // ---------------------------------------------------------------------
 // 8. PREMIUM / DISCOUNT Y OTE (rango de la TF superior)
@@ -765,7 +779,7 @@ alertcondition(evBE, "Mover SL a break-even", "SMC Pro: mover el stop a break-ev
 // ---------------------------------------------------------------------
 // 10. PANEL
 // ---------------------------------------------------------------------
-var table tb = table.new(position.top_right, 2, 9, bgcolor = #131722, border_color = #2A2E39, border_width = 1, frame_color = #2A2E39, frame_width = 1)
+var table tb = table.new(position.bottom_right, 2, 9, bgcolor = #131722, border_color = #2A2E39, border_width = 1, frame_color = #2A2E39, frame_width = 1)
 if showPanel and barstate.islast
     string estado = vDir == 1 ? "EN LARGO" + (vBE ? " (BE)" : "") : vDir == -1 ? "EN CORTO" + (vBE ? " (BE)" : "") : armL ? "ARMADO LARGO · esperando CHoCH" : armS ? "ARMADO CORTO · esperando CHoCH" : "Esperando toque del 50%"
     int nbA = (not na(hB1M) ? 1 : 0) + (not na(hB2M) ? 1 : 0) + (not na(hB3M) ? 1 : 0)
@@ -790,3 +804,145 @@ if showPanel and barstate.islast
     table.cell(tb, 1, 7, modoZona, text_color = colTxt, text_size = size.small)
     table.cell(tb, 0, 8, "Estado", text_color = colTxt, text_size = size.small)
     table.cell(tb, 1, 8, estado, text_color = colLiq, text_size = size.small)
+
+// Estado de la posición para el panel de oportunidad
+int   posDir = vDir
+float posEnt = vEnt
+float posSL  = vSL
+float posTP  = vTP
+bool  posBE  = vBE
+
+// ---------------------------------------------------------------------
+// 11. PANEL "¿HAY OPORTUNIDAD?" (lenguaje sencillo)
+// ---------------------------------------------------------------------
+color cOppVerde = #1F7A63
+color cOppRojo  = #8E2F3C
+color cOppAmbar = #7A5E1A
+color cOppGris  = #2A2E39
+color cOppFondo = #131722
+color cOppTexto = #D1D4DC
+
+// Zona de compra (o venta) válida más cercana al precio actual
+f_cercana(array<float> tops, array<float> bots, array<int> tms, int nS, bool up) =>
+    float rt = na
+    float rb = na
+    for k = 0 to nS - 1
+        float t  = array.get(tops, k)
+        float b  = array.get(bots, k)
+        int   tm = array.get(tms, k)
+        if not na(tm)
+            if up and b <= close and (na(rt) or t > rt)
+                rt := t
+                rb := b
+            if not up and t >= close and (na(rb) or b < rb)
+                rt := t
+                rb := b
+    [rt, rb]
+
+f_px(float v) =>
+    na(v) ? "—" : str.tostring(v, format.mintick)
+
+[zcT, zcB] = f_cercana(hBTs, hBBs, hBMs, nSlots, true)
+[zvT, zvB] = f_cercana(hSTs, hSBs, hSMs, nSlots, false)
+
+// Avisos: confirmaciones que aparecieron pero se descartaron (se muestran 8 velas)
+var string aviso    = ""
+var int    avisoBar = na
+if armL and confL and sesgoL and not senalL
+    aviso    := not plano ? "Hubo confirmación de LONG, pero ya hay una operación abierta." : not kzOk ? "Hubo confirmación de LONG fuera del horario elegido: descartada." : "Hubo confirmación de LONG, pero el beneficio posible es pequeño para el riesgo (o el stop queda muy lejos): descartada."
+    avisoBar := bar_index
+if armS and confS and sesgoS and not senalS
+    aviso    := not plano ? "Hubo confirmación de SHORT, pero ya hay una operación abierta." : not kzOk ? "Hubo confirmación de SHORT fuera del horario elegido: descartada." : "Hubo confirmación de SHORT, pero el beneficio posible es pequeño para el riesgo (o el stop queda muy lejos): descartada."
+    avisoBar := bar_index
+
+string oppPos = oppPosTxt == "Arriba izquierda" ? position.top_left : oppPosTxt == "Abajo derecha" ? position.bottom_right : oppPosTxt == "Abajo izquierda" ? position.bottom_left : position.top_right
+string oppTam = oppTamTxt == "Pequeño" ? size.small : oppTamTxt == "Grande" ? size.large : size.normal
+
+var table opp = table.new(oppPos, 2, 10, bgcolor = cOppFondo, border_color = cOppGris, border_width = 1, frame_color = cOppGris, frame_width = 2)
+
+if showOpp and barstate.islast
+    string htfN  = htfTf == "240" ? "4H" : htfTf
+    string nota  = barstate.isconfirmed ? "" : "\n(Espera al cierre de la vela para confirmar)"
+    string est   = ""
+    string que   = ""
+    color  cEst  = cOppGris
+    float  vE    = na
+    float  vS    = na
+    float  vT    = na
+    if not tfOk
+        est  := "⚠ CAMBIA EL GRÁFICO"
+        que  := "Pon el gráfico en 15 minutos (debe ser menor que " + htfN + ")."
+        cEst := cOppAmbar
+    else if senalL
+        est  := "🟢 ABRIR LONG (COMPRA)"
+        que  := "Compra ahora y coloca el Stop y el Objetivo de abajo." + nota
+        cEst := cOppVerde
+        vE   := close
+        vS   := slL
+        vT   := tpL
+    else if senalS
+        est  := "🔴 ABRIR SHORT (VENTA)"
+        que  := "Vende ahora y coloca el Stop y el Objetivo de abajo." + nota
+        cEst := cOppRojo
+        vE   := close
+        vS   := slS
+        vT   := tpS
+    else if posDir == 1
+        est  := "📈 LONG ABIERTO"
+        que  := posBE ? "El stop ya está en la entrada (sin riesgo). Deja correr hasta el objetivo." : "Mantén la operación. No muevas el Stop ni el Objetivo."
+        cEst := cOppVerde
+        vE   := posEnt
+        vS   := posSL
+        vT   := posTP
+    else if posDir == -1
+        est  := "📉 SHORT ABIERTO"
+        que  := posBE ? "El stop ya está en la entrada (sin riesgo). Deja correr hasta el objetivo." : "Mantén la operación. No muevas el Stop ni el Objetivo."
+        cEst := cOppRojo
+        vE   := posEnt
+        vS   := posSL
+        vT   := posTP
+    else if armL and sesgoL
+        est  := "⏳ POSIBLE LONG"
+        que  := "El precio está en la zona de compra. TODAVÍA NO ENTRES: espera la señal de confirmación."
+        cEst := cOppAmbar
+    else if armS and sesgoS
+        est  := "⏳ POSIBLE SHORT"
+        que  := "El precio está en la zona de venta. TODAVÍA NO ENTRES: espera la señal de confirmación."
+        cEst := cOppAmbar
+    else if armL or armS
+        est  := "⚠ ZONA TOCADA, CONTRA TENDENCIA"
+        que  := "El precio tocó una zona, pero va en contra de la tendencia de " + htfN + ". No operar."
+        cEst := cOppGris
+    else
+        est  := "⚪ SIN OPORTUNIDAD"
+        que  := "No hagas nada. Espera a que el precio llegue a una zona de compra o de venta."
+        cEst := cOppGris
+
+    string tend = hTrend == 1 ? "Alcista → buscar solo LONG" : hTrend == -1 ? "Bajista → buscar solo SHORT" : "Sin dirección clara"
+    if not usarSesgo
+        tend := tend + " (filtro desactivado)"
+    string zc = na(zcB) ? "Ninguna activa" : f_px(zcB) + " – " + f_px(zcT)
+    string zv = na(zvB) ? "Ninguna activa" : f_px(zvB) + " – " + f_px(zvT)
+    string av = not na(avisoBar) and bar_index - avisoBar <= 8 ? aviso : "—"
+    string rb = na(vE) or na(vS) or na(vT) or vE == vS ? "—" : "1 : " + str.tostring(math.abs(vT - vE) / math.abs(vE - vS), "#.#")
+
+    table.cell(opp, 0, 0, "¿HAY OPORTUNIDAD?", text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 1, 0, syminfo.ticker + " · " + (timeframe.isminutes ? timeframe.period + "m" : timeframe.period), text_color = cOppTexto, text_size = oppTam, text_halign = text.align_right)
+    table.cell(opp, 0, 1, "Estado", text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 1, 1, est, text_color = color.white, bgcolor = cEst, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 0, 2, "Qué hacer", text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 1, 2, que, text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 0, 3, "Tendencia " + htfN, text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 1, 3, tend, text_color = hTrend == 1 ? cOppVerde : hTrend == -1 ? cOppRojo : cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 0, 4, "Zona de compra", text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 1, 4, zc, text_color = cOppVerde, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 0, 5, "Zona de venta", text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 1, 5, zv, text_color = cOppRojo, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 0, 6, "Entrada", text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 1, 6, f_px(vE), text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 0, 7, "Stop (SL)", text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 1, 7, f_px(vS), text_color = cOppRojo, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 0, 8, "Objetivo (TP)", text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 1, 8, f_px(vT) + (rb == "—" ? "" : "   (riesgo : beneficio " + rb + ")"), text_color = cOppVerde, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 0, 9, "Aviso", text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)
+    table.cell(opp, 1, 9, av, text_color = cOppTexto, text_size = oppTam, text_halign = text.align_left)

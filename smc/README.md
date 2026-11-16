@@ -11,6 +11,29 @@ Configuración de partida: **gráfico de 15m con sesgo y OB en 4H**, para BTC, a
 
 ---
 
+## 0. Lo primero: el panel "¿HAY OPORTUNIDAD?"
+
+No hace falta entender los conceptos técnicos para usarlo. El panel (arriba a la derecha) te dice en palabras normales qué está pasando y qué hacer:
+
+| Estado | Qué significa | Qué hacer |
+|---|---|---|
+| ⚪ **SIN OPORTUNIDAD** | El precio no está en ninguna zona interesante. | Nada. Esperar. |
+| ⏳ **POSIBLE LONG / SHORT** | El precio llegó a una zona de compra o de venta, pero falta la confirmación. | **No entrar todavía.** Esperar. |
+| 🟢 **ABRIR LONG** / 🔴 **ABRIR SHORT** | Se cumplen todas las reglas. | Abrir la operación con la **Entrada**, el **Stop** y el **Objetivo** que muestra el panel. |
+| 📈 / 📉 **LONG / SHORT ABIERTO** | Hay una operación en curso. | Mantenerla sin mover el stop ni el objetivo, salvo cuando el panel diga que ya está en break-even. |
+| ⚠ **ZONA TOCADA, CONTRA TENDENCIA** | El precio tocó una zona, pero la tendencia de 4H va al revés. | No operar. |
+
+Además, el panel muestra:
+- la **tendencia de 4H**, que te dice si buscar LONG o SHORT;
+- la **zona de compra** y la **zona de venta** más cercanas;
+- **avisos** cuando una señal se descartó y por qué.
+
+**Modo simple** (activado por defecto en el indicador): solo dibuja las zonas de compra y venta de 4H, las señales y el panel. Para ver todos los dibujos técnicos, desactívalo en ⚙ → Entradas → *MODO SIMPLE*.
+
+Para no tener que mirar el gráfico todo el rato, crea una alerta con *"Cualquier llamada de alert()"*. Te avisará en el móvil cuando aparezca **ABRIR LONG** o **ABRIR SHORT**, con la entrada, el stop y el objetivo.
+
+---
+
 ## 1. Definiciones exactas (lo que el código hace de verdad)
 
 ### Estructura
