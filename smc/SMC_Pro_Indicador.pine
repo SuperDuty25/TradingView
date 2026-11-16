@@ -5,57 +5,84 @@ indicator("SMC Pro · Estructura, Liquidez, OB e Ineficiencias", shorttitle = "S
 // SMC Pro (indicador)
 // Modelo: sesgo y Order Blocks en temporalidad superior (4H por defecto)
 //         + confirmación por CHoCH en el gráfico (15m) tras tocar el 50% del OB.
-// Reglas de mitigación: una zona se invalida SOLO cuando una vela CIERRA
-// al otro lado (OB alcista / FVG alcista: cierre por debajo del mínimo).
-// Order Block válido = última vela opuesta (rango completo con mechas) antes
-// de un desplazamiento que rompe estructura (BOS/CHoCH), que además:
-//   1) dejó al menos un FVG en el desplazamiento, y
-//   2) tomó liquidez (un swing previo) dentro del mismo tramo.
+// Mitigación: una zona se invalida SOLO cuando una vela CIERRA al otro lado.
+//   · OB mitigado → Breaker Block (BRK) con polaridad invertida.
+//   · FVG mitigado → Inverse FVG (IFVG) con polaridad invertida.
+// Order Block válido = última vela opuesta (rango completo con mechas) antes de
+// un desplazamiento que rompe estructura (BOS/CHoCH), que además dejó FVG y
+// tomó liquidez dentro del mismo tramo.
 // =====================================================================
 
 // ---------------------------------------------------------------------
-// 1. ENTRADAS
+// 1. ENTRADAS COMUNES (idénticas en indicador y estrategia)
 // ---------------------------------------------------------------------
 const string G_HTF = "Temporalidad superior (sesgo y OB)"
 const string G_EST = "Estructura (gráfico)"
 const string G_OB  = "Order Blocks"
-const string G_FVG = "Ineficiencias (FVG)"
-const string G_LIQ = "Liquidez"
+const string G_PD  = "Premium / Discount y OTE"
+const string G_KZ  = "Killzones (sesiones)"
 const string G_SET = "Modelo de entrada"
-const string G_COL = "Colores (paleta oscura)"
+const string G_RSK = "Gestión de riesgo"
 
 htfTf      = input.timeframe("240", "Temporalidad superior", group = G_HTF)
-htfLen     = input.int(5, "Longitud de pivote TF superior", minval = 2, maxval = 50, group = G_HTF, tooltip = "Velas a cada lado para confirmar un swing en la temporalidad superior. En 4H, 5 = el swing se confirma 20 horas después.")
-showHtfOB  = input.bool(true, "Mostrar OB de la temporalidad superior", group = G_HTF)
+htfLen     = input.int(5, "Longitud de pivote TF superior", minval = 2, maxval = 50, group = G_HTF, tooltip = "Velas a cada lado para confirmar un swing en la TF superior. En 4H, 5 = el swing se confirma 20 horas después.")
+nSlots     = input.int(3, "OB activos de la TF superior por dirección", minval = 1, maxval = 3, group = G_HTF, tooltip = "Cuántos OB válidos (no mitigados) se vigilan a la vez, empezando por el más reciente.")
 
 intLen     = input.int(5, "Longitud de pivote (estructura interna)", minval = 2, maxval = 50, group = G_EST, tooltip = "Velas a cada lado para confirmar un swing en el gráfico. En 15m, 5 = el swing se confirma 75 minutos después.")
-showEstr   = input.bool(true, "Mostrar BOS / CHoCH", group = G_EST)
 
-showOB     = input.bool(true, "Mostrar OB del gráfico", group = G_OB)
 reqSweep   = input.bool(true, "Exigir toma de liquidez previa", group = G_OB)
 reqFvg     = input.bool(true, "Exigir FVG en el desplazamiento", group = G_OB)
-maxOB      = input.int(5, "Máx. OB activos por dirección", minval = 1, maxval = 30, group = G_OB)
 scanMax    = input.int(100, "Velas máximas a escanear para buscar el OB", minval = 10, maxval = 300, group = G_OB)
+eqTol      = input.float(0.1, "Tolerancia EQH / EQL (× ATR 14)", minval = 0.01, step = 0.01, group = G_OB)
 
-showFVG    = input.bool(true, "Mostrar FVG", group = G_FVG)
-fvgMinAtr  = input.float(0.25, "Tamaño mínimo del FVG (× ATR 14)", minval = 0.0, step = 0.05, group = G_FVG, tooltip = "Filtra huecos insignificantes. 0 = sin filtro.")
-fvgShrink  = input.bool(true, "Recortar FVG al rellenarse parcialmente", group = G_FVG)
-maxFVG     = input.int(10, "Máx. FVG activos por dirección", minval = 1, maxval = 50, group = G_FVG)
+modoZona   = input.string("Ninguno", "Filtro de zona del OB", options = ["Ninguno", "Premium/Discount", "OTE (62–79%)"], group = G_PD, tooltip = "Rango = máximo y mínimo del último tramo de la TF superior.\nPremium/Discount: el 50% del OB alcista debe estar por debajo del equilibrio (y el bajista por encima).\nOTE: el 50% del OB debe estar en el retroceso 62–79% del rango.")
 
-showLiq    = input.bool(true, "Mostrar EQH / EQL y barridos", group = G_LIQ)
-eqTol      = input.float(0.1, "Tolerancia EQH / EQL (× ATR 14)", minval = 0.01, step = 0.01, group = G_LIQ)
+usarKZ     = input.bool(false, "Entrar solo dentro de killzones", group = G_KZ)
+kzTz       = input.string("America/New_York", "Zona horaria de las sesiones", group = G_KZ)
+kzLonOn    = input.bool(true, "Londres", inline = "lon", group = G_KZ)
+kzLon      = input.session("0200-0500", "", inline = "lon", group = G_KZ)
+kzNyOn     = input.bool(true, "Nueva York", inline = "ny", group = G_KZ)
+kzNy       = input.session("0700-1000", "", inline = "ny", group = G_KZ)
+kzAsiaOn   = input.bool(false, "Asia", inline = "as", group = G_KZ)
+kzAsia     = input.session("2000-2359", "", inline = "as", group = G_KZ)
 
-borrarMit  = input.bool(false, "Borrar zonas mitigadas (si no, quedan en gris)", group = G_SET)
-showSig    = input.bool(true, "Mostrar señales de entrada", group = G_SET)
 usarSesgo  = input.bool(true, "Operar solo a favor del sesgo de la TF superior", group = G_SET)
 soloChoch  = input.bool(true, "Confirmación solo con CHoCH (si no, también BOS)", group = G_SET)
 maxEspera  = input.int(48, "Velas máximas entre toque del 50% y confirmación", minval = 1, group = G_SET, tooltip = "En 15m, 48 velas = 12 horas.")
-slBuf      = input.float(0.2, "Margen del stop detrás del OB (× ATR 14)", minval = 0.0, step = 0.05, group = G_SET)
-rr         = input.float(3.0, "Relación R:B objetivo", minval = 1.0, step = 0.5, group = G_SET)
-minRR      = input.float(2.0, "R:B mínimo para aceptar la operación", minval = 0.5, step = 0.5, group = G_SET)
-modoTP     = input.string("Más conservador", "Objetivo (TP)", options = ["3R fijo", "Siguiente liquidez", "Más conservador"], group = G_SET, tooltip = "3R fijo: TP = entrada + R × riesgo.\nSiguiente liquidez: el swing no tomado más cercano que cumpla el R:B mínimo (si no hay, usa 3R).\nMás conservador: el más cercano entre 3R y esa liquidez.")
-apal       = input.int(5, "Apalancamiento", minval = 1, maxval = 10, group = G_SET)
-showPanel  = input.bool(true, "Mostrar panel", group = G_SET)
+
+slBuf      = input.float(0.2, "Margen del stop detrás del OB (× ATR 14)", minval = 0.0, step = 0.05, group = G_RSK)
+rr         = input.float(3.0, "Relación R:B objetivo", minval = 1.0, step = 0.5, group = G_RSK)
+minRR      = input.float(2.0, "R:B mínimo para aceptar la operación", minval = 0.5, step = 0.5, group = G_RSK)
+modoTP     = input.string("Más conservador", "Objetivo (TP)", options = ["3R fijo", "Siguiente liquidez", "Más conservador"], group = G_RSK, tooltip = "3R fijo: TP = entrada + R × riesgo.\nSiguiente liquidez: el swing no tomado más cercano que cumpla el R:B mínimo (si no hay, usa 3R).\nMás conservador: el más cercano entre 3R y esa liquidez.")
+apal       = input.int(5, "Apalancamiento máximo", minval = 1, maxval = 10, group = G_RSK)
+usarBE     = input.bool(false, "Mover stop a break-even", group = G_RSK)
+beR        = input.float(1.0, "Activar break-even al llegar a (R)", minval = 0.5, step = 0.25, group = G_RSK)
+beOff      = input.float(0.0, "Colchón del break-even (× riesgo)", minval = 0.0, step = 0.05, group = G_RSK, tooltip = "0 = stop exactamente en la entrada. Un pequeño colchón (p. ej. 0,1) cubre comisiones.")
+maxHoras   = input.int(48, "Duración máxima de la operación (horas)", minval = 1, group = G_RSK)
+
+// ---------------------------------------------------------------------
+// 1b. ENTRADAS VISUALES (solo indicador)
+// ---------------------------------------------------------------------
+const string G_VIS = "Visualización"
+const string G_COL = "Colores (paleta oscura)"
+
+showHtfOB  = input.bool(true, "Mostrar OB de la TF superior", group = G_VIS)
+showEstr   = input.bool(true, "Mostrar BOS / CHoCH", group = G_VIS)
+showOB     = input.bool(true, "Mostrar OB del gráfico", group = G_VIS)
+showBRK    = input.bool(true, "Convertir OB mitigados en Breaker Blocks", group = G_VIS)
+maxOB      = input.int(5, "Máx. OB / breakers del gráfico por dirección", minval = 1, maxval = 30, group = G_VIS)
+showFVG    = input.bool(true, "Mostrar FVG", group = G_VIS)
+showIFVG   = input.bool(true, "Convertir FVG mitigados en IFVG", group = G_VIS)
+fvgMinAtr  = input.float(0.25, "Tamaño mínimo del FVG (× ATR 14)", minval = 0.0, step = 0.05, group = G_VIS, tooltip = "Filtra huecos insignificantes. 0 = sin filtro.")
+fvgShrink  = input.bool(true, "Recortar FVG al rellenarse parcialmente", group = G_VIS)
+maxFVG     = input.int(10, "Máx. FVG / IFVG por dirección", minval = 1, maxval = 50, group = G_VIS)
+showLiq    = input.bool(true, "Mostrar EQH / EQL y barridos", group = G_VIS)
+showPD     = input.bool(true, "Mostrar Premium / Discount de la TF superior", group = G_VIS)
+showOTE    = input.bool(true, "Mostrar banda OTE (62–79%)", group = G_VIS)
+showKZ     = input.bool(true, "Sombrear killzones", group = G_VIS)
+borrarMit  = input.bool(false, "Borrar zonas mitigadas (si no, quedan en gris)", group = G_VIS)
+showSig    = input.bool(true, "Mostrar señales y gestión", group = G_VIS)
+showPanel  = input.bool(true, "Mostrar panel", group = G_VIS)
 
 colObBull  = input.color(#0E5E4E, "OB alcista", group = G_COL)
 colObBear  = input.color(#7A1F2B, "OB bajista", group = G_COL)
@@ -65,15 +92,18 @@ colFvgBull = input.color(#1E3A5F, "FVG alcista", group = G_COL)
 colFvgBear = input.color(#4A2C5E, "FVG bajista", group = G_COL)
 colEstBull = input.color(#2E7D6B, "Estructura alcista", group = G_COL)
 colEstBear = input.color(#9C3D4A, "Estructura bajista", group = G_COL)
-colLiq     = input.color(#8D6E1F, "Liquidez", group = G_COL)
+colLiq     = input.color(#8D6E1F, "Liquidez / OTE", group = G_COL)
+colKzLon   = input.color(#1A2236, "Killzone Londres", group = G_COL)
+colKzNy    = input.color(#251E33, "Killzone Nueva York", group = G_COL)
+colKzAsia  = input.color(#1C2622, "Killzone Asia", group = G_COL)
 colMit     = input.color(#2A2E39, "Zona mitigada", group = G_COL)
 colTxt     = input.color(#B2B5BE, "Texto", group = G_COL)
 
 // ---------------------------------------------------------------------
-// 2. MOTOR SMC (estructura, liquidez y Order Blocks)
+// 2. MOTOR SMC (estructura, liquidez, Order Blocks y rango)
 //    Se usa en el gráfico y dentro de request.security para la TF superior.
 // ---------------------------------------------------------------------
-f_smc(simple int len, bool needSweep, bool needFvg, simple int maxScan, float tol, array<float> hP, array<int> hI, array<float> lP, array<int> lI) =>
+f_smc(simple int len, bool needSweep, bool needFvg, simple int maxScan, float tol, array<float> hP, array<int> hI, array<float> lP, array<int> lI, array<float> aBT, array<float> aBB, array<int> aBTm, array<float> aST, array<float> aSB, array<int> aSTm) =>
     var int   trend   = 0
     var float swHi    = na
     var int   swHiIdx = na
@@ -83,14 +113,8 @@ f_smc(simple int len, bool needSweep, bool needFvg, simple int maxScan, float to
     var bool  swLoOn  = false
     var int   bslIdx  = na
     var int   sslIdx  = na
-    var float bTop    = na
-    var float bBot    = na
-    var int   bIdx    = na
-    var int   bTime   = na
-    var float sTop    = na
-    var float sBot    = na
-    var int   sIdx    = na
-    var int   sTime   = na
+    var float trTop   = na
+    var float trBot   = na
 
     float atr = ta.atr(14)
     float ph  = ta.pivothigh(high, len, len)
@@ -99,8 +123,14 @@ f_smc(simple int len, bool needSweep, bool needFvg, simple int maxScan, float to
     int   evt     = 0
     float evtLvl  = na
     int   evtFrom = na
-    bool  bNew    = false
-    bool  sNew    = false
+    bool  nBull   = false
+    float nBT     = na
+    float nBB     = na
+    int   nBIdx   = na
+    bool  nBear   = false
+    float nST     = na
+    float nSB     = na
+    int   nSIdx   = na
     bool  bslSw   = false
     float bslLvl  = na
     int   bslFrom = na
@@ -157,6 +187,7 @@ f_smc(simple int len, bool needSweep, bool needFvg, simple int maxScan, float to
         swHi    := ph
         swHiIdx := pIdx
         swHiOn  := true
+        trTop   := ph
 
     if not na(pl)
         int pIdx = bar_index - len
@@ -174,18 +205,27 @@ f_smc(simple int len, bool needSweep, bool needFvg, simple int maxScan, float to
         swLo    := pl
         swLoIdx := pIdx
         swLoOn  := true
+        trBot   := pl
 
-    // --- Mitigación del OB activo: cierre al otro lado ---
-    if not na(bBot) and close < bBot
-        bTop  := na
-        bBot  := na
-        bIdx  := na
-        bTime := na
-    if not na(sTop) and close > sTop
-        sTop  := na
-        sBot  := na
-        sIdx  := na
-        sTime := na
+    // Rango del tramo actual (extremos desde el último swing): base de premium/discount
+    trTop := na(trTop) ? high : math.max(trTop, high)
+    trBot := na(trBot) ? low : math.min(trBot, low)
+
+    // --- Mitigación de los OB activos: cierre al otro lado ---
+    int nb = array.size(aBT)
+    if nb > 0
+        for k = nb - 1 to 0
+            if close < array.get(aBB, k)
+                array.remove(aBT, k)
+                array.remove(aBB, k)
+                array.remove(aBTm, k)
+    int ns = array.size(aST)
+    if ns > 0
+        for k = ns - 1 to 0
+            if close > array.get(aST, k)
+                array.remove(aST, k)
+                array.remove(aSB, k)
+                array.remove(aSTm, k)
 
     // --- Ruptura alcista (BOS / CHoCH) por cierre ---
     if swHiOn and close > swHi
@@ -213,11 +253,17 @@ f_smc(simple int len, bool needSweep, bool needFvg, simple int maxScan, float to
                         break
             bool sweepOk = not na(sslIdx) and sslIdx >= swHiIdx
             if (not needFvg or fvgOk) and (not needSweep or sweepOk)
-                bTop  := cT
-                bBot  := cB
-                bIdx  := bar_index - cOff
-                bTime := time[cOff]
-                bNew  := true
+                nBull := true
+                nBT   := cT
+                nBB   := cB
+                nBIdx := bar_index - cOff
+                array.unshift(aBT, cT)
+                array.unshift(aBB, cB)
+                array.unshift(aBTm, time[cOff])
+                if array.size(aBT) > 10
+                    array.pop(aBT)
+                    array.pop(aBB)
+                    array.pop(aBTm)
 
     // --- Ruptura bajista (BOS / CHoCH) por cierre ---
     if swLoOn and close < swLo
@@ -244,13 +290,25 @@ f_smc(simple int len, bool needSweep, bool needFvg, simple int maxScan, float to
                         break
             bool sweepOk = not na(bslIdx) and bslIdx >= swLoIdx
             if (not needFvg or fvgOk) and (not needSweep or sweepOk)
-                sTop  := cT
-                sBot  := cB
-                sIdx  := bar_index - cOff
-                sTime := time[cOff]
-                sNew  := true
+                nBear := true
+                nST   := cT
+                nSB   := cB
+                nSIdx := bar_index - cOff
+                array.unshift(aST, cT)
+                array.unshift(aSB, cB)
+                array.unshift(aSTm, time[cOff])
+                if array.size(aST) > 10
+                    array.pop(aST)
+                    array.pop(aSB)
+                    array.pop(aSTm)
 
-    [trend, evt, evtLvl, evtFrom, bNew, bTop, bBot, bIdx, bTime, sNew, sTop, sBot, sIdx, sTime, bslSw, bslLvl, bslFrom, sslSw, sslLvl, sslFrom, eqhLvl, eqhFrom, eqlLvl, eqlFrom, atr]
+    [trend, evt, evtLvl, evtFrom, nBull, nBT, nBB, nBIdx, nBear, nST, nSB, nSIdx, bslSw, bslLvl, bslFrom, sslSw, sslLvl, sslFrom, eqhLvl, eqhFrom, eqlLvl, eqlFrom, atr, trTop, trBot]
+
+f_getF(array<float> a, int k) =>
+    array.size(a) > k ? array.get(a, k) : na
+
+f_getI(array<int> a, int k) =>
+    array.size(a) > k ? array.get(a, k) : na
 
 // Envoltorio para la TF superior: devuelve la vela HTF ya CERRADA (sin repintado)
 f_htf(simple int len, bool needSweep, bool needFvg, simple int maxScan, float tol) =>
@@ -258,8 +316,32 @@ f_htf(simple int len, bool needSweep, bool needFvg, simple int maxScan, float to
     var array<int>   hx = array.new<int>()
     var array<float> lp = array.new<float>()
     var array<int>   lx = array.new<int>()
-    [t, e, el, ef, bn, bt, bb, bi, btm, sn, st, sb, si, stm, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, a] = f_smc(len, needSweep, needFvg, maxScan, tol, hp, hx, lp, lx)
-    [t[1], bt[1], bb[1], btm[1], st[1], sb[1], stm[1]]
+    var array<float> bt = array.new<float>()
+    var array<float> bb = array.new<float>()
+    var array<int>   bm = array.new<int>()
+    var array<float> st = array.new<float>()
+    var array<float> sb = array.new<float>()
+    var array<int>   sm = array.new<int>()
+    [t, e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13, e14, e15, e16, e17, e18, e19, e20, e21, a, tt, tb] = f_smc(len, needSweep, needFvg, maxScan, tol, hp, hx, lp, lx, bt, bb, bm, st, sb, sm)
+    float b1T = f_getF(bt, 0)
+    float b1B = f_getF(bb, 0)
+    int   b1M = f_getI(bm, 0)
+    float b2T = f_getF(bt, 1)
+    float b2B = f_getF(bb, 1)
+    int   b2M = f_getI(bm, 1)
+    float b3T = f_getF(bt, 2)
+    float b3B = f_getF(bb, 2)
+    int   b3M = f_getI(bm, 2)
+    float s1T = f_getF(st, 0)
+    float s1B = f_getF(sb, 0)
+    int   s1M = f_getI(sm, 0)
+    float s2T = f_getF(st, 1)
+    float s2B = f_getF(sb, 1)
+    int   s2M = f_getI(sm, 1)
+    float s3T = f_getF(st, 2)
+    float s3B = f_getF(sb, 2)
+    int   s3M = f_getI(sm, 2)
+    [t[1], tt[1], tb[1], b1T[1], b1B[1], b1M[1], b2T[1], b2B[1], b2M[1], b3T[1], b3B[1], b3M[1], s1T[1], s1B[1], s1M[1], s2T[1], s2B[1], s2M[1], s3T[1], s3B[1], s3M[1]]
 
 // Liquidez objetivo: swing no tomado más cercano más allá de un umbral
 f_liq(array<float> pool, float thr, bool up) =>
@@ -274,43 +356,262 @@ f_liq(array<float> pool, float thr, bool up) =>
                 best := p
     best
 
+// Filtro premium/discount u OTE sobre el 50% del OB
+f_zonaOk(float m, bool up, string modo, float top, float bot) =>
+    float rng = top - bot
+    bool ok = true
+    if modo == "Premium/Discount"
+        ok := not na(rng) and rng > 0 and (up ? m < bot + rng * 0.5 : m > bot + rng * 0.5)
+    else if modo == "OTE (62–79%)"
+        ok := not na(rng) and rng > 0 and (up ? (m <= top - rng * 0.62 and m >= top - rng * 0.79) : (m >= bot + rng * 0.62 and m <= bot + rng * 0.79))
+    ok
+
+// Elige el OB más reciente cuyo 50% se toca en esta vela (sin cerrar al otro lado)
+f_pick(array<float> tops, array<float> bots, array<int> tms, array<int> used, bool up, int nS, string modo, float top, float bot) =>
+    float rt  = na
+    float rb  = na
+    int   rtm = na
+    for k = 0 to nS - 1
+        float t  = array.get(tops, k)
+        float b  = array.get(bots, k)
+        int   tm = array.get(tms, k)
+        if na(rtm) and not na(tm) and not array.includes(used, tm)
+            float m = (t + b) / 2
+            bool touch = up ? (low <= m and close >= b) : (high >= m and close <= t)
+            if touch and f_zonaOk(m, up, modo, top, bot)
+                rt  := t
+                rb  := b
+                rtm := tm
+    [rt, rb, rtm]
+
+f_inSes(string ses, string tz) =>
+    not na(time(timeframe.period, ses, tz))
+
 f_trendTxt(int t) =>
     t == 1 ? "Alcista ▲" : t == -1 ? "Bajista ▼" : "Neutral"
 
 // ---------------------------------------------------------------------
-// 3. CÁLCULOS
+// 2b. POSICIÓN VIRTUAL (para que el indicador gestione igual que la estrategia:
+//     una operación a la vez, break-even y cierre por tiempo)
+// ---------------------------------------------------------------------
+var int   vDir  = 0
+var float vEnt  = na
+var float vSL   = na
+var float vTP   = na
+var float vRisk = na
+var int   vT0   = na
+var bool  vBE   = false
+var line  vSLLn = na
+var line  vTPLn = na
+
+string vRes = ""
+bool   evBE = false
+if vDir != 0
+    bool hitSL = vDir == 1 ? low <= vSL : high >= vSL
+    bool hitTP = vDir == 1 ? high >= vTP : low <= vTP
+    if hitSL
+        vRes := vBE ? "BE" : "SL"
+        vDir := 0
+    else if hitTP
+        vRes := "TP"
+        vDir := 0
+    else if time - vT0 >= maxHoras * 3600000
+        vRes := "Tiempo"
+        vDir := 0
+    else if usarBE and not vBE and (vDir == 1 ? high >= vEnt + beR * vRisk : low <= vEnt - beR * vRisk)
+        vBE  := true
+        vSL  := vEnt + vDir * beOff * vRisk
+        evBE := true
+        line.set_y1(vSLLn, vSL)
+        line.set_y2(vSLLn, vSL)
+    if vDir != 0
+        line.set_x2(vSLLn, bar_index)
+        line.set_x2(vTPLn, bar_index)
+
+bool plano = vDir == 0
+
+// ---------------------------------------------------------------------
+// 3. CÁLCULOS (idénticos en indicador y estrategia)
 // ---------------------------------------------------------------------
 var array<float> lqHiP = array.new<float>()
 var array<int>   lqHiI = array.new<int>()
 var array<float> lqLoP = array.new<float>()
 var array<int>   lqLoI = array.new<int>()
+var array<float> loBT  = array.new<float>()
+var array<float> loBB  = array.new<float>()
+var array<int>   loBTm = array.new<int>()
+var array<float> loST  = array.new<float>()
+var array<float> loSB  = array.new<float>()
+var array<int>   loSTm = array.new<int>()
 
-[trend, evt, evtLvl, evtFrom, bNew, bTop, bBot, bIdx, bTime, sNew, sTop, sBot, sIdx, sTime, bslSw, bslLvl, bslFrom, sslSw, sslLvl, sslFrom, eqhLvl, eqhFrom, eqlLvl, eqlFrom, atrL] = f_smc(intLen, reqSweep, reqFvg, scanMax, eqTol, lqHiP, lqHiI, lqLoP, lqLoI)
+[trend, evt, evtLvl, evtFrom, nBull, nBT, nBB, nBIdx, nBear, nST, nSB, nSIdx, bslSw, bslLvl, bslFrom, sslSw, sslLvl, sslFrom, eqhLvl, eqhFrom, eqlLvl, eqlFrom, atrL, trTopL, trBotL] = f_smc(intLen, reqSweep, reqFvg, scanMax, eqTol, lqHiP, lqHiI, lqLoP, lqLoI, loBT, loBB, loBTm, loST, loSB, loSTm)
 
-[hTrend, hBT, hBB, hBTm, hST, hSB, hSTm] = request.security(syminfo.tickerid, htfTf, f_htf(htfLen, reqSweep, reqFvg, scanMax, eqTol), lookahead = barmerge.lookahead_on)
+[hTrend, hTop, hBot, hB1T, hB1B, hB1M, hB2T, hB2B, hB2M, hB3T, hB3B, hB3M, hS1T, hS1B, hS1M, hS2T, hS2B, hS2M, hS3T, hS3B, hS3M] = request.security(syminfo.tickerid, htfTf, f_htf(htfLen, reqSweep, reqFvg, scanMax, eqTol), lookahead = barmerge.lookahead_on)
 
-float hBMid = (hBT + hBB) / 2
-float hSMid = (hST + hSB) / 2
-bool  tfOk  = timeframe.in_seconds() < timeframe.in_seconds(htfTf)
-int   tfMs  = timeframe.in_seconds() * 1000
+array<float> hBTs = array.from(hB1T, hB2T, hB3T)
+array<float> hBBs = array.from(hB1B, hB2B, hB3B)
+array<int>   hBMs = array.from(hB1M, hB2M, hB3M)
+array<float> hSTs = array.from(hS1T, hS2T, hS3T)
+array<float> hSBs = array.from(hS1B, hS2B, hS3B)
+array<int>   hSMs = array.from(hS1M, hS2M, hS3M)
+
+bool tfOk = timeframe.in_seconds() < timeframe.in_seconds(htfTf)
+
+// Killzones
+bool inLon  = f_inSes(kzLon, kzTz)
+bool inNy   = f_inSes(kzNy, kzTz)
+bool inAsia = f_inSes(kzAsia, kzTz)
+bool inKZ   = (kzLonOn and inLon) or (kzNyOn and inNy) or (kzAsiaOn and inAsia)
+bool kzOk   = not usarKZ or inKZ
 
 // ---------------------------------------------------------------------
-// 4. DIBUJO: zonas (OB y FVG) con mitigación por cierre
+// 4. MODELO DE ENTRADA
+//    1) El precio toca el 50% de un OB activo de la TF superior sin cerrar al otro lado → ARMADO
+//    2) En ≤ maxEspera velas aparece CHoCH a favor en el gráfico → SEÑAL
+//    3) SL detrás del OB (+ margen ATR); TP según modo; filtros R:B, liquidación, zona y killzone
+// ---------------------------------------------------------------------
+var bool  armL    = false
+var int   armLBar = na
+var float armLT   = na
+var float armLB   = na
+var int   armLM   = na
+var bool  armS    = false
+var int   armSBar = na
+var float armST   = na
+var float armSB   = na
+var int   armSM   = na
+var array<int> usadosL = array.new<int>()
+var array<int> usadosS = array.new<int>()
+
+if armL and (close < armLB or bar_index - armLBar > maxEspera)
+    armL := false
+if armS and (close > armST or bar_index - armSBar > maxEspera)
+    armS := false
+
+[pLT, pLB, pLM] = f_pick(hBTs, hBBs, hBMs, usadosL, true, nSlots, modoZona, hTop, hBot)
+[pST, pSB, pSM] = f_pick(hSTs, hSBs, hSMs, usadosS, false, nSlots, modoZona, hTop, hBot)
+bool toqueL = not na(pLM)
+bool toqueS = not na(pSM)
+
+if not armL and toqueL
+    armL    := true
+    armLBar := bar_index
+    armLT   := pLT
+    armLB   := pLB
+    armLM   := pLM
+if not armS and toqueS
+    armS    := true
+    armSBar := bar_index
+    armST   := pST
+    armSB   := pSB
+    armSM   := pSM
+
+bool confL  = soloChoch ? evt == 2 : evt > 0
+bool confS  = soloChoch ? evt == -2 : evt < 0
+bool sesgoL = not usarSesgo or hTrend == 1
+bool sesgoS = not usarSesgo or hTrend == -1
+
+float slL   = armLB - atrL * slBuf
+float riskL = close - slL
+float tpL3  = close + rr * riskL
+float liqL  = f_liq(lqHiP, close + minRR * riskL, true)
+float tpL   = modoTP == "3R fijo" ? tpL3 : na(liqL) ? tpL3 : modoTP == "Siguiente liquidez" ? liqL : math.min(tpL3, liqL)
+
+float slS   = armST + atrL * slBuf
+float riskS = slS - close
+float tpS3  = close - rr * riskS
+float liqS  = f_liq(lqLoP, close - minRR * riskS, false)
+float tpS   = modoTP == "3R fijo" ? tpS3 : na(liqS) ? tpS3 : modoTP == "Siguiente liquidez" ? liqS : math.max(tpS3, liqS)
+
+// Filtro de liquidación (aproximado): el stop debe quedar antes del 80% de la distancia de liquidación
+float liqDist = 100.0 / apal * 0.8
+bool okL = riskL > 0 and (tpL - close) / riskL >= minRR and riskL / close * 100 < liqDist
+bool okS = riskS > 0 and (close - tpS) / riskS >= minRR and riskS / close * 100 < liqDist
+
+bool senalL = tfOk and plano and armL and confL and sesgoL and okL and kzOk
+bool senalS = tfOk and plano and armS and confS and sesgoS and okS and kzOk and not senalL
+
+if senalL
+    array.push(usadosL, armLM)
+    if array.size(usadosL) > 100
+        array.shift(usadosL)
+    armL := false
+if senalS
+    array.push(usadosS, armSM)
+    if array.size(usadosS) > 100
+        array.shift(usadosS)
+    armS := false
+
+// ---------------------------------------------------------------------
+// 5. APERTURA DE LA POSICIÓN VIRTUAL, SEÑALES Y ALERTAS DE GESTIÓN
+// ---------------------------------------------------------------------
+if senalL or senalS
+    vDir  := senalL ? 1 : -1
+    vEnt  := close
+    vSL   := senalL ? slL : slS
+    vTP   := senalL ? tpL : tpS
+    vRisk := senalL ? riskL : riskS
+    vT0   := time
+    vBE   := false
+    if showSig
+        vSLLn := line.new(bar_index, vSL, bar_index + 1, vSL, color = colEstBear, width = 1)
+        vTPLn := line.new(bar_index, vTP, bar_index + 1, vTP, color = colEstBull, width = 1)
+
+if showSig and senalL
+    label.new(bar_index, low, "COMPRA\nSL " + str.tostring(slL, format.mintick) + "\nTP " + str.tostring(tpL, format.mintick) + "\nR:B " + str.tostring((tpL - close) / riskL, "#.##"), yloc = yloc.belowbar, style = label.style_label_up, color = colObBull, textcolor = color.white, size = size.small)
+if showSig and senalS
+    label.new(bar_index, high, "VENTA\nSL " + str.tostring(slS, format.mintick) + "\nTP " + str.tostring(tpS, format.mintick) + "\nR:B " + str.tostring((close - tpS) / riskS, "#.##"), yloc = yloc.abovebar, style = label.style_label_down, color = colObBear, textcolor = color.white, size = size.small)
+if showSig and evBE
+    label.new(bar_index, close, "SL → BE", yloc = yloc.abovebar, style = label.style_label_down, color = colMit, textcolor = colTxt, size = size.tiny)
+if showSig and vRes != ""
+    color cRes = vRes == "TP" ? colEstBull : vRes == "SL" ? colEstBear : colMit
+    label.new(bar_index, close, vRes == "TP" ? "TP ✓" : vRes == "SL" ? "SL ✕" : vRes == "BE" ? "BE" : "Cierre por tiempo", yloc = yloc.abovebar, style = label.style_label_down, color = cRes, textcolor = color.white, size = size.tiny)
+
+if senalL
+    alert("SMC Pro · COMPRA " + syminfo.ticker + " | Entrada " + str.tostring(close, format.mintick) + " | SL " + str.tostring(slL, format.mintick) + " | TP " + str.tostring(tpL, format.mintick), alert.freq_once_per_bar_close)
+if senalS
+    alert("SMC Pro · VENTA " + syminfo.ticker + " | Entrada " + str.tostring(close, format.mintick) + " | SL " + str.tostring(slS, format.mintick) + " | TP " + str.tostring(tpS, format.mintick), alert.freq_once_per_bar_close)
+if evBE
+    alert("SMC Pro · " + syminfo.ticker + " | Mover SL a break-even: " + str.tostring(vSL, format.mintick), alert.freq_once_per_bar_close)
+if vRes == "Tiempo"
+    alert("SMC Pro · " + syminfo.ticker + " | Cerrar operación: alcanzada la duración máxima", alert.freq_once_per_bar_close)
+
+// ---------------------------------------------------------------------
+// 6. DIBUJO: zonas del gráfico (OB → Breaker, FVG → IFVG)
 // ---------------------------------------------------------------------
 type Zona
     box   caja
     line  mid
     float top
     float bot
+    float top0
+    float bot0
     int   dir
+    bool  inv
 
-f_actualizar(array<Zona> zs, bool shrink, bool borrar, color cMit) =>
+f_actualizar(array<Zona> zs, bool shrink, bool borrar, bool invertir, string txtInv, color cUp, color cDn, color cMit) =>
     int n = array.size(zs)
     if n > 0
         for k = n - 1 to 0
             Zona z = array.get(zs, k)
             bool mit = z.dir == 1 ? close < z.bot : close > z.top
-            if mit
+            if mit and invertir and not z.inv
+                // Cierre al otro lado → la zona cambia de polaridad (Breaker / IFVG)
+                z.inv := true
+                z.dir := -z.dir
+                z.top := z.top0
+                z.bot := z.bot0
+                color c = z.dir == 1 ? cUp : cDn
+                box.set_top(z.caja, z.top)
+                box.set_bottom(z.caja, z.bot)
+                box.set_bgcolor(z.caja, color.new(c, 70))
+                box.set_border_color(z.caja, c)
+                box.set_border_style(z.caja, line.style_dashed)
+                box.set_text(z.caja, txtInv)
+                box.set_right(z.caja, bar_index + 5)
+                line.set_color(z.mid, c)
+                line.set_x2(z.mid, bar_index + 5)
+            else if mit
                 if borrar
                     box.delete(z.caja)
                     line.delete(z.mid)
@@ -318,12 +619,11 @@ f_actualizar(array<Zona> zs, bool shrink, bool borrar, color cMit) =>
                     box.set_right(z.caja, bar_index)
                     box.set_bgcolor(z.caja, color.new(cMit, 60))
                     box.set_border_color(z.caja, cMit)
-                    box.set_text_color(z.caja, color.new(cMit, 0))
                     line.set_x2(z.mid, bar_index)
                     line.set_color(z.mid, cMit)
                 array.remove(zs, k)
             else
-                if shrink
+                if shrink and not z.inv
                     if z.dir == 1 and low < z.top
                         z.top := math.max(low, z.bot)
                         box.set_top(z.caja, z.top)
@@ -338,7 +638,7 @@ f_nueva(array<Zona> zs, int left, float top, float bot, int dir, color c, string
     float m = (top + bot) / 2
     box  b = box.new(left, top, bar_index + 5, bot, bgcolor = color.new(c, 55), border_color = color.new(c, 20), text = txt, text_size = size.tiny, text_color = cTxt, text_halign = text.align_right, text_valign = text.align_center)
     line l = line.new(left, m, bar_index + 5, m, color = color.new(c, 0), style = line.style_dotted, width = 1)
-    array.push(zs, Zona.new(b, l, top, bot, dir))
+    array.push(zs, Zona.new(b, l, top, bot, top, bot, dir, false))
     if array.size(zs) > maxN
         Zona old = array.shift(zs)
         box.delete(old.caja)
@@ -350,18 +650,16 @@ var array<Zona> obBear  = array.new<Zona>()
 var array<Zona> fvgBull = array.new<Zona>()
 var array<Zona> fvgBear = array.new<Zona>()
 
-f_actualizar(obBull, false, borrarMit, colMit)
-f_actualizar(obBear, false, borrarMit, colMit)
-f_actualizar(fvgBull, fvgShrink, borrarMit, colMit)
-f_actualizar(fvgBear, fvgShrink, borrarMit, colMit)
+f_actualizar(obBull, false, borrarMit, showBRK, "BRK", colObBull, colObBear, colMit)
+f_actualizar(obBear, false, borrarMit, showBRK, "BRK", colObBull, colObBear, colMit)
+f_actualizar(fvgBull, fvgShrink, borrarMit, showIFVG, "IFVG", colFvgBull, colFvgBear, colMit)
+f_actualizar(fvgBear, fvgShrink, borrarMit, showIFVG, "IFVG", colFvgBull, colFvgBear, colMit)
 
-// OB del gráfico
-if showOB and bNew
-    f_nueva(obBull, bIdx, bTop, bBot, 1, colObBull, "OB", maxOB, colTxt)
-if showOB and sNew
-    f_nueva(obBear, sIdx, sTop, sBot, -1, colObBear, "OB", maxOB, colTxt)
+if showOB and nBull
+    f_nueva(obBull, nBIdx, nBT, nBB, 1, colObBull, "OB", maxOB, colTxt)
+if showOB and nBear
+    f_nueva(obBear, nSIdx, nST, nSB, -1, colObBear, "OB", maxOB, colTxt)
 
-// FVG del gráfico (patrón de 3 velas, filtrado por tamaño)
 bool fvgUp = low > high[2] and (low - high[2]) >= atrL * fvgMinAtr
 bool fvgDn = high < low[2] and (low[2] - high) >= atrL * fvgMinAtr
 if showFVG and fvgUp
@@ -391,149 +689,104 @@ if showLiq and sslSw
     line.new(sslFrom, sslLvl, bar_index, sslLvl, color = colLiq, style = line.style_dashed, width = 1)
     label.new(bar_index, sslLvl, "✕ SSL", color = color.new(color.black, 100), textcolor = colLiq, style = label.style_label_up, size = size.tiny)
 
-// OB de la temporalidad superior (solo el más reciente válido por dirección)
-string htfName = htfTf == "240" ? "4H" : htfTf
-var box  hBullBox = na
-var line hBullLn  = na
-var box  hBearBox = na
-var line hBearLn  = na
+// ---------------------------------------------------------------------
+// 7. OB DE LA TEMPORALIDAD SUPERIOR (hasta 3 por dirección)
+// ---------------------------------------------------------------------
+string htfName = htfTf == "240" ? "4H" : htfTf == "D" or htfTf == "1D" ? "D" : htfTf
+int    tfMs    = timeframe.in_seconds() * 1000
 
-bool hBullChg = (na(hBTm) != na(hBTm[1])) or (not na(hBTm) and hBTm != hBTm[1])
-bool hBearChg = (na(hSTm) != na(hSTm[1])) or (not na(hSTm) and hSTm != hSTm[1])
+f_htfDraw(array<box> bx, array<line> ln, array<float> tops, array<float> bots, array<int> tms, int nS, color c, string txt, color cTxt, int rightT, bool show) =>
+    for k = 0 to 2
+        float t  = array.get(tops, k)
+        float b  = array.get(bots, k)
+        int   tm = array.get(tms, k)
+        box   bb = array.get(bx, k)
+        line  ll = array.get(ln, k)
+        if na(tm) or k >= nS or not show
+            if not na(bb)
+                box.delete(bb)
+                line.delete(ll)
+                array.set(bx, k, box(na))
+                array.set(ln, k, line(na))
+        else
+            float m = (t + b) / 2
+            if na(bb)
+                array.set(bx, k, box.new(tm, t, rightT, b, xloc = xloc.bar_time, bgcolor = color.new(c, 60), border_color = c, border_width = 2, text = txt, text_size = size.small, text_color = cTxt, text_halign = text.align_left, text_valign = text.align_top))
+                array.set(ln, k, line.new(tm, m, rightT, m, xloc = xloc.bar_time, color = cTxt, style = line.style_dashed, width = 1))
+            else
+                box.set_lefttop(bb, tm, t)
+                box.set_rightbottom(bb, rightT, b)
+                line.set_xy1(ll, tm, m)
+                line.set_xy2(ll, rightT, m)
+    true
 
-if showHtfOB and hBullChg
-    if not na(hBullBox)
-        box.set_right(hBullBox, time)
-        box.set_bgcolor(hBullBox, color.new(colMit, 60))
-        box.set_border_color(hBullBox, colMit)
-        line.set_x2(hBullLn, time)
-        line.set_color(hBullLn, colMit)
-        hBullBox := na
-        hBullLn  := na
-    if not na(hBTm)
-        hBullBox := box.new(hBTm, hBT, time + 5 * tfMs, hBB, xloc = xloc.bar_time, bgcolor = color.new(colHtfBull, 60), border_color = colHtfBull, border_width = 2, text = "OB " + htfName, text_size = size.small, text_color = colTxt, text_halign = text.align_left, text_valign = text.align_top)
-        hBullLn  := line.new(hBTm, hBMid, time + 5 * tfMs, hBMid, xloc = xloc.bar_time, color = colTxt, style = line.style_dashed, width = 1)
-if showHtfOB and not na(hBullBox)
-    box.set_right(hBullBox, time + 5 * tfMs)
-    line.set_x2(hBullLn, time + 5 * tfMs)
+var array<box>  hbBox = array.new<box>(3)
+var array<line> hbLn  = array.new<line>(3)
+var array<box>  hsBox = array.new<box>(3)
+var array<line> hsLn  = array.new<line>(3)
 
-if showHtfOB and hBearChg
-    if not na(hBearBox)
-        box.set_right(hBearBox, time)
-        box.set_bgcolor(hBearBox, color.new(colMit, 60))
-        box.set_border_color(hBearBox, colMit)
-        line.set_x2(hBearLn, time)
-        line.set_color(hBearLn, colMit)
-        hBearBox := na
-        hBearLn  := na
-    if not na(hSTm)
-        hBearBox := box.new(hSTm, hST, time + 5 * tfMs, hSB, xloc = xloc.bar_time, bgcolor = color.new(colHtfBear, 60), border_color = colHtfBear, border_width = 2, text = "OB " + htfName, text_size = size.small, text_color = colTxt, text_halign = text.align_left, text_valign = text.align_bottom)
-        hBearLn  := line.new(hSTm, hSMid, time + 5 * tfMs, hSMid, xloc = xloc.bar_time, color = colTxt, style = line.style_dashed, width = 1)
-if showHtfOB and not na(hBearBox)
-    box.set_right(hBearBox, time + 5 * tfMs)
-    line.set_x2(hBearLn, time + 5 * tfMs)
+f_htfDraw(hbBox, hbLn, hBTs, hBBs, hBMs, nSlots, colHtfBull, "OB " + htfName, colTxt, time + 5 * tfMs, showHtfOB)
+f_htfDraw(hsBox, hsLn, hSTs, hSBs, hSMs, nSlots, colHtfBear, "OB " + htfName, colTxt, time + 5 * tfMs, showHtfOB)
 
 // ---------------------------------------------------------------------
-// 5. MODELO DE ENTRADA
-//    1) Precio toca el 50% del OB de la TF superior sin cerrar al otro lado → ARMADO
-//    2) En ≤ maxEspera velas aparece CHoCH a favor en el gráfico → SEÑAL
-//    3) SL detrás del OB (+ margen ATR); TP según modo; filtro R:B y de liquidación
+// 8. PREMIUM / DISCOUNT Y OTE (rango de la TF superior)
 // ---------------------------------------------------------------------
-var bool armL    = false
-var int  armLBar = na
-var int  armLOb  = na
-var int  usedLOb = na
-var bool armS    = false
-var int  armSBar = na
-var int  armSOb  = na
-var int  usedSOb = na
+float pdRng = hTop - hBot
+float pdEq  = hBot + pdRng * 0.5
+float ote1  = hTrend == -1 ? hBot + pdRng * 0.62 : hTop - pdRng * 0.62
+float ote2  = hTrend == -1 ? hBot + pdRng * 0.79 : hTop - pdRng * 0.79
 
-if armL and (na(hBTm) or hBTm != armLOb or close < hBB or bar_index - armLBar > maxEspera)
-    armL := false
-if armS and (na(hSTm) or hSTm != armSOb or close > hST or bar_index - armSBar > maxEspera)
-    armS := false
+pTop = plot(showPD ? hTop : na, "Rango: máximo", color = color.new(colEstBear, 40), style = plot.style_linebr)
+pEq  = plot(showPD ? pdEq : na, "Equilibrio 50%", color = color.new(colTxt, 40), style = plot.style_linebr)
+pBot = plot(showPD ? hBot : na, "Rango: mínimo", color = color.new(colEstBull, 40), style = plot.style_linebr)
+pO1  = plot(showPD and showOTE ? ote1 : na, "OTE 62%", color = color.new(colLiq, 30), style = plot.style_linebr)
+pO2  = plot(showPD and showOTE ? ote2 : na, "OTE 79%", color = color.new(colLiq, 30), style = plot.style_linebr)
+fill(pTop, pEq, color = color.new(colHtfBear, 90), title = "Premium")
+fill(pEq, pBot, color = color.new(colHtfBull, 90), title = "Discount")
+fill(pO1, pO2, color = color.new(colLiq, 85), title = "OTE")
 
-bool toqueL = not na(hBTm) and (na(usedLOb) or hBTm != usedLOb) and low <= hBMid and close >= hBB
-bool toqueS = not na(hSTm) and (na(usedSOb) or hSTm != usedSOb) and high >= hSMid and close <= hST
-
-if not armL and toqueL
-    armL    := true
-    armLBar := bar_index
-    armLOb  := hBTm
-if not armS and toqueS
-    armS    := true
-    armSBar := bar_index
-    armSOb  := hSTm
-
-bool confL  = soloChoch ? evt == 2 : evt > 0
-bool confS  = soloChoch ? evt == -2 : evt < 0
-bool sesgoL = not usarSesgo or hTrend == 1
-bool sesgoS = not usarSesgo or hTrend == -1
-
-float slL   = hBB - atrL * slBuf
-float riskL = close - slL
-float tpL3  = close + rr * riskL
-float liqL  = f_liq(lqHiP, close + minRR * riskL, true)
-float tpL   = modoTP == "3R fijo" ? tpL3 : na(liqL) ? tpL3 : modoTP == "Siguiente liquidez" ? liqL : math.min(tpL3, liqL)
-
-float slS   = hST + atrL * slBuf
-float riskS = slS - close
-float tpS3  = close - rr * riskS
-float liqS  = f_liq(lqLoP, close - minRR * riskS, false)
-float tpS   = modoTP == "3R fijo" ? tpS3 : na(liqS) ? tpS3 : modoTP == "Siguiente liquidez" ? liqS : math.max(tpS3, liqS)
-
-// Filtro de liquidación (aproximado): el stop debe estar bastante antes del precio de liquidación
-float liqDist = 100.0 / apal * 0.8
-bool okL = riskL > 0 and (tpL - close) / riskL >= minRR and riskL / close * 100 < liqDist
-bool okS = riskS > 0 and (close - tpS) / riskS >= minRR and riskS / close * 100 < liqDist
-
-bool senalL = tfOk and armL and confL and sesgoL and okL
-bool senalS = tfOk and armS and confS and sesgoS and okS
-
-if senalL
-    usedLOb := armLOb
-    armL    := false
-if senalS
-    usedSOb := armSOb
-    armS    := false
-
-if showSig and senalL
-    label.new(bar_index, low, "COMPRA\nSL " + str.tostring(slL, format.mintick) + "\nTP " + str.tostring(tpL, format.mintick) + "\nR:B " + str.tostring((tpL - close) / riskL, "#.##"), yloc = yloc.belowbar, style = label.style_label_up, color = colObBull, textcolor = color.white, size = size.small)
-    line.new(bar_index, slL, bar_index + 20, slL, color = colEstBear, width = 1)
-    line.new(bar_index, tpL, bar_index + 20, tpL, color = colEstBull, width = 1)
-    alert("SMC Pro · COMPRA " + syminfo.ticker + " | Entrada " + str.tostring(close, format.mintick) + " | SL " + str.tostring(slL, format.mintick) + " | TP " + str.tostring(tpL, format.mintick), alert.freq_once_per_bar_close)
-if showSig and senalS
-    label.new(bar_index, high, "VENTA\nSL " + str.tostring(slS, format.mintick) + "\nTP " + str.tostring(tpS, format.mintick) + "\nR:B " + str.tostring((close - tpS) / riskS, "#.##"), yloc = yloc.abovebar, style = label.style_label_down, color = colObBear, textcolor = color.white, size = size.small)
-    line.new(bar_index, slS, bar_index + 20, slS, color = colEstBear, width = 1)
-    line.new(bar_index, tpS, bar_index + 20, tpS, color = colEstBull, width = 1)
-    alert("SMC Pro · VENTA " + syminfo.ticker + " | Entrada " + str.tostring(close, format.mintick) + " | SL " + str.tostring(slS, format.mintick) + " | TP " + str.tostring(tpS, format.mintick), alert.freq_once_per_bar_close)
+// Killzones
+bgcolor(showKZ and kzLonOn and inLon ? color.new(colKzLon, 40) : na, title = "Killzone Londres")
+bgcolor(showKZ and kzNyOn and inNy ? color.new(colKzNy, 40) : na, title = "Killzone Nueva York")
+bgcolor(showKZ and kzAsiaOn and inAsia ? color.new(colKzAsia, 40) : na, title = "Killzone Asia")
 
 // ---------------------------------------------------------------------
-// 6. ALERTAS (crear en TradingView: "Cualquier llamada de alert()" o las de abajo)
+// 9. ALERTAS (en TradingView: "Cualquier llamada de alert()" o estas)
 // ---------------------------------------------------------------------
 alertcondition(senalL, "Señal de COMPRA", "SMC Pro: señal de COMPRA en {{ticker}} ({{interval}})")
 alertcondition(senalS, "Señal de VENTA", "SMC Pro: señal de VENTA en {{ticker}} ({{interval}})")
-alertcondition(toqueL and not armL[1], "Toque 50% OB alcista TF superior", "SMC Pro: precio en el 50% del OB alcista en {{ticker}}")
-alertcondition(toqueS and not armS[1], "Toque 50% OB bajista TF superior", "SMC Pro: precio en el 50% del OB bajista en {{ticker}}")
+alertcondition(toqueL and not armL[1], "Toque 50% OB alcista TF superior", "SMC Pro: precio en el 50% de un OB alcista en {{ticker}}")
+alertcondition(toqueS and not armS[1], "Toque 50% OB bajista TF superior", "SMC Pro: precio en el 50% de un OB bajista en {{ticker}}")
 alertcondition(evt == 2, "CHoCH alcista", "SMC Pro: CHoCH alcista en {{ticker}} ({{interval}})")
 alertcondition(evt == -2, "CHoCH bajista", "SMC Pro: CHoCH bajista en {{ticker}} ({{interval}})")
 alertcondition(bslSw or sslSw, "Barrido de liquidez", "SMC Pro: barrido de liquidez en {{ticker}} ({{interval}})")
+alertcondition(evBE, "Mover SL a break-even", "SMC Pro: mover el stop a break-even en {{ticker}}")
 
 // ---------------------------------------------------------------------
-// 7. PANEL
+// 10. PANEL
 // ---------------------------------------------------------------------
-var table tb = table.new(position.top_right, 2, 6, bgcolor = #131722, border_color = #2A2E39, border_width = 1, frame_color = #2A2E39, frame_width = 1)
+var table tb = table.new(position.top_right, 2, 9, bgcolor = #131722, border_color = #2A2E39, border_width = 1, frame_color = #2A2E39, frame_width = 1)
 if showPanel and barstate.islast
-    string estado = armL ? "ARMADO LARGO · esperando CHoCH" : armS ? "ARMADO CORTO · esperando CHoCH" : "Esperando toque del 50%"
+    string estado = vDir == 1 ? "EN LARGO" + (vBE ? " (BE)" : "") : vDir == -1 ? "EN CORTO" + (vBE ? " (BE)" : "") : armL ? "ARMADO LARGO · esperando CHoCH" : armS ? "ARMADO CORTO · esperando CHoCH" : "Esperando toque del 50%"
+    int nbA = (not na(hB1M) ? 1 : 0) + (not na(hB2M) ? 1 : 0) + (not na(hB3M) ? 1 : 0)
+    int nsA = (not na(hS1M) ? 1 : 0) + (not na(hS2M) ? 1 : 0) + (not na(hS3M) ? 1 : 0)
+    string zona = na(pdEq) ? "—" : close > pdEq ? "Premium" : "Discount"
+    string kzTxt = inLon ? "Londres" : inNy ? "Nueva York" : inAsia ? "Asia" : "Fuera"
     table.cell(tb, 0, 0, "SMC Pro", text_color = colTxt, text_size = size.small)
     table.cell(tb, 1, 0, tfOk ? "" : "⚠ Usa un TF menor que " + htfName, text_color = colEstBear, text_size = size.small)
     table.cell(tb, 0, 1, "Sesgo " + htfName, text_color = colTxt, text_size = size.small)
     table.cell(tb, 1, 1, f_trendTxt(hTrend), text_color = hTrend == 1 ? colEstBull : hTrend == -1 ? colEstBear : colTxt, text_size = size.small)
     table.cell(tb, 0, 2, "Estructura " + timeframe.period, text_color = colTxt, text_size = size.small)
     table.cell(tb, 1, 2, f_trendTxt(trend), text_color = trend == 1 ? colEstBull : trend == -1 ? colEstBear : colTxt, text_size = size.small)
-    table.cell(tb, 0, 3, "OB " + htfName + " alcista", text_color = colTxt, text_size = size.small)
-    table.cell(tb, 1, 3, na(hBB) ? "—" : str.tostring(hBB, format.mintick) + " – " + str.tostring(hBT, format.mintick), text_color = colTxt, text_size = size.small)
-    table.cell(tb, 0, 4, "OB " + htfName + " bajista", text_color = colTxt, text_size = size.small)
-    table.cell(tb, 1, 4, na(hSB) ? "—" : str.tostring(hSB, format.mintick) + " – " + str.tostring(hST, format.mintick), text_color = colTxt, text_size = size.small)
-    table.cell(tb, 0, 5, "Estado", text_color = colTxt, text_size = size.small)
-    table.cell(tb, 1, 5, estado, text_color = colLiq, text_size = size.small)
+    table.cell(tb, 0, 3, "OB " + htfName + " alcistas activos", text_color = colTxt, text_size = size.small)
+    table.cell(tb, 1, 3, str.tostring(math.min(nbA, nSlots)), text_color = colTxt, text_size = size.small)
+    table.cell(tb, 0, 4, "OB " + htfName + " bajistas activos", text_color = colTxt, text_size = size.small)
+    table.cell(tb, 1, 4, str.tostring(math.min(nsA, nSlots)), text_color = colTxt, text_size = size.small)
+    table.cell(tb, 0, 5, "Zona del precio", text_color = colTxt, text_size = size.small)
+    table.cell(tb, 1, 5, zona, text_color = zona == "Premium" ? colEstBear : colEstBull, text_size = size.small)
+    table.cell(tb, 0, 6, "Killzone", text_color = colTxt, text_size = size.small)
+    table.cell(tb, 1, 6, kzTxt, text_color = colTxt, text_size = size.small)
+    table.cell(tb, 0, 7, "Filtro de zona", text_color = colTxt, text_size = size.small)
+    table.cell(tb, 1, 7, modoZona, text_color = colTxt, text_size = size.small)
+    table.cell(tb, 0, 8, "Estado", text_color = colTxt, text_size = size.small)
+    table.cell(tb, 1, 8, estado, text_color = colLiq, text_size = size.small)

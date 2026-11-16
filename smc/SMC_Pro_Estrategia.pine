@@ -4,40 +4,69 @@ strategy("SMC Pro · Estrategia (OB HTF + CHoCH)", shorttitle = "SMC Pro Estrate
 // =====================================================================
 // SMC Pro (estrategia para backtest). MISMO motor y MISMAS reglas que el indicador.
 // 1) Sesgo y OB en la TF superior (4H): el OB debe haber tomado liquidez y dejado FVG.
-// 2) El precio toca el 50% del OB sin cerrar al otro lado → setup ARMADO.
+//    Se vigilan hasta 3 OB activos por dirección.
+// 2) El precio toca el 50% de un OB sin cerrar al otro lado → setup ARMADO.
+//    Filtros opcionales: premium/discount u OTE, y killzones.
 // 3) CHoCH a favor en el gráfico (15m) en ≤ N velas → ENTRADA a mercado.
 // 4) SL detrás del OB (+ margen ATR). TP: 3R, siguiente liquidez o el más conservador.
+//    Break-even opcional al llegar a 1R.
 // 5) Tamaño por riesgo fijo (% del capital), limitado por el apalancamiento.
 // 6) Cierre forzado si la operación supera la duración máxima (48 h por defecto).
 // margin_long/short = 10 → el broker simulado permite hasta x10.
 // =====================================================================
 
+// ---------------------------------------------------------------------
+// 1. ENTRADAS COMUNES (idénticas en indicador y estrategia)
+// ---------------------------------------------------------------------
 const string G_HTF = "Temporalidad superior (sesgo y OB)"
 const string G_EST = "Estructura (gráfico)"
 const string G_OB  = "Order Blocks"
+const string G_PD  = "Premium / Discount y OTE"
+const string G_KZ  = "Killzones (sesiones)"
 const string G_SET = "Modelo de entrada"
 const string G_RSK = "Gestión de riesgo"
 
 htfTf      = input.timeframe("240", "Temporalidad superior", group = G_HTF)
-htfLen     = input.int(5, "Longitud de pivote TF superior", minval = 2, maxval = 50, group = G_HTF)
-intLen     = input.int(5, "Longitud de pivote (estructura interna)", minval = 2, maxval = 50, group = G_EST)
+htfLen     = input.int(5, "Longitud de pivote TF superior", minval = 2, maxval = 50, group = G_HTF, tooltip = "Velas a cada lado para confirmar un swing en la TF superior. En 4H, 5 = el swing se confirma 20 horas después.")
+nSlots     = input.int(3, "OB activos de la TF superior por dirección", minval = 1, maxval = 3, group = G_HTF, tooltip = "Cuántos OB válidos (no mitigados) se vigilan a la vez, empezando por el más reciente.")
+
+intLen     = input.int(5, "Longitud de pivote (estructura interna)", minval = 2, maxval = 50, group = G_EST, tooltip = "Velas a cada lado para confirmar un swing en el gráfico. En 15m, 5 = el swing se confirma 75 minutos después.")
+
 reqSweep   = input.bool(true, "Exigir toma de liquidez previa", group = G_OB)
 reqFvg     = input.bool(true, "Exigir FVG en el desplazamiento", group = G_OB)
 scanMax    = input.int(100, "Velas máximas a escanear para buscar el OB", minval = 10, maxval = 300, group = G_OB)
 eqTol      = input.float(0.1, "Tolerancia EQH / EQL (× ATR 14)", minval = 0.01, step = 0.01, group = G_OB)
 
+modoZona   = input.string("Ninguno", "Filtro de zona del OB", options = ["Ninguno", "Premium/Discount", "OTE (62–79%)"], group = G_PD, tooltip = "Rango = máximo y mínimo del último tramo de la TF superior.\nPremium/Discount: el 50% del OB alcista debe estar por debajo del equilibrio (y el bajista por encima).\nOTE: el 50% del OB debe estar en el retroceso 62–79% del rango.")
+
+usarKZ     = input.bool(false, "Entrar solo dentro de killzones", group = G_KZ)
+kzTz       = input.string("America/New_York", "Zona horaria de las sesiones", group = G_KZ)
+kzLonOn    = input.bool(true, "Londres", inline = "lon", group = G_KZ)
+kzLon      = input.session("0200-0500", "", inline = "lon", group = G_KZ)
+kzNyOn     = input.bool(true, "Nueva York", inline = "ny", group = G_KZ)
+kzNy       = input.session("0700-1000", "", inline = "ny", group = G_KZ)
+kzAsiaOn   = input.bool(false, "Asia", inline = "as", group = G_KZ)
+kzAsia     = input.session("2000-2359", "", inline = "as", group = G_KZ)
+
 usarSesgo  = input.bool(true, "Operar solo a favor del sesgo de la TF superior", group = G_SET)
 soloChoch  = input.bool(true, "Confirmación solo con CHoCH (si no, también BOS)", group = G_SET)
-maxEspera  = input.int(48, "Velas máximas entre toque del 50% y confirmación", minval = 1, group = G_SET)
-dirOp      = input.string("Ambas", "Dirección", options = ["Ambas", "Solo largos", "Solo cortos"], group = G_SET)
+maxEspera  = input.int(48, "Velas máximas entre toque del 50% y confirmación", minval = 1, group = G_SET, tooltip = "En 15m, 48 velas = 12 horas.")
 
 slBuf      = input.float(0.2, "Margen del stop detrás del OB (× ATR 14)", minval = 0.0, step = 0.05, group = G_RSK)
 rr         = input.float(3.0, "Relación R:B objetivo", minval = 1.0, step = 0.5, group = G_RSK)
 minRR      = input.float(2.0, "R:B mínimo para aceptar la operación", minval = 0.5, step = 0.5, group = G_RSK)
-modoTP     = input.string("Más conservador", "Objetivo (TP)", options = ["3R fijo", "Siguiente liquidez", "Más conservador"], group = G_RSK)
-riesgoPct  = input.float(1.0, "Riesgo por operación (% del capital)", minval = 0.1, maxval = 10, step = 0.1, group = G_RSK)
+modoTP     = input.string("Más conservador", "Objetivo (TP)", options = ["3R fijo", "Siguiente liquidez", "Más conservador"], group = G_RSK, tooltip = "3R fijo: TP = entrada + R × riesgo.\nSiguiente liquidez: el swing no tomado más cercano que cumpla el R:B mínimo (si no hay, usa 3R).\nMás conservador: el más cercano entre 3R y esa liquidez.")
 apal       = input.int(5, "Apalancamiento máximo", minval = 1, maxval = 10, group = G_RSK)
+usarBE     = input.bool(false, "Mover stop a break-even", group = G_RSK)
+beR        = input.float(1.0, "Activar break-even al llegar a (R)", minval = 0.5, step = 0.25, group = G_RSK)
+beOff      = input.float(0.0, "Colchón del break-even (× riesgo)", minval = 0.0, step = 0.05, group = G_RSK, tooltip = "0 = stop exactamente en la entrada. Un pequeño colchón (p. ej. 0,1) cubre comisiones.")
 maxHoras   = input.int(48, "Duración máxima de la operación (horas)", minval = 1, group = G_RSK)
+
+// ---------------------------------------------------------------------
+// 1b. ENTRADAS DE BACKTEST (solo estrategia)
+// ---------------------------------------------------------------------
+dirOp      = input.string("Ambas", "Dirección", options = ["Ambas", "Solo largos", "Solo cortos"], group = G_SET)
+riesgoPct  = input.float(1.0, "Riesgo por operación (% del capital)", minval = 0.1, maxval = 10, step = 0.1, group = G_RSK)
 enteras    = input.bool(false, "Cantidad en unidades enteras (acciones)", group = G_RSK)
 desde      = input.time(timestamp("2024-01-01T00:00:00"), "Backtest desde", group = G_RSK)
 
@@ -46,10 +75,10 @@ colBear    = input.color(#5B1A1A, "OB bajista TF superior", group = "Colores")
 colTxt     = input.color(#B2B5BE, "Texto / 50%", group = "Colores")
 
 // ---------------------------------------------------------------------
-// 2. MOTOR SMC (estructura, liquidez y Order Blocks)
+// 2. MOTOR SMC (estructura, liquidez, Order Blocks y rango)
 //    Se usa en el gráfico y dentro de request.security para la TF superior.
 // ---------------------------------------------------------------------
-f_smc(simple int len, bool needSweep, bool needFvg, simple int maxScan, float tol, array<float> hP, array<int> hI, array<float> lP, array<int> lI) =>
+f_smc(simple int len, bool needSweep, bool needFvg, simple int maxScan, float tol, array<float> hP, array<int> hI, array<float> lP, array<int> lI, array<float> aBT, array<float> aBB, array<int> aBTm, array<float> aST, array<float> aSB, array<int> aSTm) =>
     var int   trend   = 0
     var float swHi    = na
     var int   swHiIdx = na
@@ -59,14 +88,8 @@ f_smc(simple int len, bool needSweep, bool needFvg, simple int maxScan, float to
     var bool  swLoOn  = false
     var int   bslIdx  = na
     var int   sslIdx  = na
-    var float bTop    = na
-    var float bBot    = na
-    var int   bIdx    = na
-    var int   bTime   = na
-    var float sTop    = na
-    var float sBot    = na
-    var int   sIdx    = na
-    var int   sTime   = na
+    var float trTop   = na
+    var float trBot   = na
 
     float atr = ta.atr(14)
     float ph  = ta.pivothigh(high, len, len)
@@ -75,8 +98,14 @@ f_smc(simple int len, bool needSweep, bool needFvg, simple int maxScan, float to
     int   evt     = 0
     float evtLvl  = na
     int   evtFrom = na
-    bool  bNew    = false
-    bool  sNew    = false
+    bool  nBull   = false
+    float nBT     = na
+    float nBB     = na
+    int   nBIdx   = na
+    bool  nBear   = false
+    float nST     = na
+    float nSB     = na
+    int   nSIdx   = na
     bool  bslSw   = false
     float bslLvl  = na
     int   bslFrom = na
@@ -133,6 +162,7 @@ f_smc(simple int len, bool needSweep, bool needFvg, simple int maxScan, float to
         swHi    := ph
         swHiIdx := pIdx
         swHiOn  := true
+        trTop   := ph
 
     if not na(pl)
         int pIdx = bar_index - len
@@ -150,18 +180,27 @@ f_smc(simple int len, bool needSweep, bool needFvg, simple int maxScan, float to
         swLo    := pl
         swLoIdx := pIdx
         swLoOn  := true
+        trBot   := pl
 
-    // --- Mitigación del OB activo: cierre al otro lado ---
-    if not na(bBot) and close < bBot
-        bTop  := na
-        bBot  := na
-        bIdx  := na
-        bTime := na
-    if not na(sTop) and close > sTop
-        sTop  := na
-        sBot  := na
-        sIdx  := na
-        sTime := na
+    // Rango del tramo actual (extremos desde el último swing): base de premium/discount
+    trTop := na(trTop) ? high : math.max(trTop, high)
+    trBot := na(trBot) ? low : math.min(trBot, low)
+
+    // --- Mitigación de los OB activos: cierre al otro lado ---
+    int nb = array.size(aBT)
+    if nb > 0
+        for k = nb - 1 to 0
+            if close < array.get(aBB, k)
+                array.remove(aBT, k)
+                array.remove(aBB, k)
+                array.remove(aBTm, k)
+    int ns = array.size(aST)
+    if ns > 0
+        for k = ns - 1 to 0
+            if close > array.get(aST, k)
+                array.remove(aST, k)
+                array.remove(aSB, k)
+                array.remove(aSTm, k)
 
     // --- Ruptura alcista (BOS / CHoCH) por cierre ---
     if swHiOn and close > swHi
@@ -189,11 +228,17 @@ f_smc(simple int len, bool needSweep, bool needFvg, simple int maxScan, float to
                         break
             bool sweepOk = not na(sslIdx) and sslIdx >= swHiIdx
             if (not needFvg or fvgOk) and (not needSweep or sweepOk)
-                bTop  := cT
-                bBot  := cB
-                bIdx  := bar_index - cOff
-                bTime := time[cOff]
-                bNew  := true
+                nBull := true
+                nBT   := cT
+                nBB   := cB
+                nBIdx := bar_index - cOff
+                array.unshift(aBT, cT)
+                array.unshift(aBB, cB)
+                array.unshift(aBTm, time[cOff])
+                if array.size(aBT) > 10
+                    array.pop(aBT)
+                    array.pop(aBB)
+                    array.pop(aBTm)
 
     // --- Ruptura bajista (BOS / CHoCH) por cierre ---
     if swLoOn and close < swLo
@@ -220,13 +265,25 @@ f_smc(simple int len, bool needSweep, bool needFvg, simple int maxScan, float to
                         break
             bool sweepOk = not na(bslIdx) and bslIdx >= swLoIdx
             if (not needFvg or fvgOk) and (not needSweep or sweepOk)
-                sTop  := cT
-                sBot  := cB
-                sIdx  := bar_index - cOff
-                sTime := time[cOff]
-                sNew  := true
+                nBear := true
+                nST   := cT
+                nSB   := cB
+                nSIdx := bar_index - cOff
+                array.unshift(aST, cT)
+                array.unshift(aSB, cB)
+                array.unshift(aSTm, time[cOff])
+                if array.size(aST) > 10
+                    array.pop(aST)
+                    array.pop(aSB)
+                    array.pop(aSTm)
 
-    [trend, evt, evtLvl, evtFrom, bNew, bTop, bBot, bIdx, bTime, sNew, sTop, sBot, sIdx, sTime, bslSw, bslLvl, bslFrom, sslSw, sslLvl, sslFrom, eqhLvl, eqhFrom, eqlLvl, eqlFrom, atr]
+    [trend, evt, evtLvl, evtFrom, nBull, nBT, nBB, nBIdx, nBear, nST, nSB, nSIdx, bslSw, bslLvl, bslFrom, sslSw, sslLvl, sslFrom, eqhLvl, eqhFrom, eqlLvl, eqlFrom, atr, trTop, trBot]
+
+f_getF(array<float> a, int k) =>
+    array.size(a) > k ? array.get(a, k) : na
+
+f_getI(array<int> a, int k) =>
+    array.size(a) > k ? array.get(a, k) : na
 
 // Envoltorio para la TF superior: devuelve la vela HTF ya CERRADA (sin repintado)
 f_htf(simple int len, bool needSweep, bool needFvg, simple int maxScan, float tol) =>
@@ -234,8 +291,32 @@ f_htf(simple int len, bool needSweep, bool needFvg, simple int maxScan, float to
     var array<int>   hx = array.new<int>()
     var array<float> lp = array.new<float>()
     var array<int>   lx = array.new<int>()
-    [t, e, el, ef, bn, bt, bb, bi, btm, sn, st, sb, si, stm, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, a] = f_smc(len, needSweep, needFvg, maxScan, tol, hp, hx, lp, lx)
-    [t[1], bt[1], bb[1], btm[1], st[1], sb[1], stm[1]]
+    var array<float> bt = array.new<float>()
+    var array<float> bb = array.new<float>()
+    var array<int>   bm = array.new<int>()
+    var array<float> st = array.new<float>()
+    var array<float> sb = array.new<float>()
+    var array<int>   sm = array.new<int>()
+    [t, e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13, e14, e15, e16, e17, e18, e19, e20, e21, a, tt, tb] = f_smc(len, needSweep, needFvg, maxScan, tol, hp, hx, lp, lx, bt, bb, bm, st, sb, sm)
+    float b1T = f_getF(bt, 0)
+    float b1B = f_getF(bb, 0)
+    int   b1M = f_getI(bm, 0)
+    float b2T = f_getF(bt, 1)
+    float b2B = f_getF(bb, 1)
+    int   b2M = f_getI(bm, 1)
+    float b3T = f_getF(bt, 2)
+    float b3B = f_getF(bb, 2)
+    int   b3M = f_getI(bm, 2)
+    float s1T = f_getF(st, 0)
+    float s1B = f_getF(sb, 0)
+    int   s1M = f_getI(sm, 0)
+    float s2T = f_getF(st, 1)
+    float s2B = f_getF(sb, 1)
+    int   s2M = f_getI(sm, 1)
+    float s3T = f_getF(st, 2)
+    float s3B = f_getF(sb, 2)
+    int   s3M = f_getI(sm, 2)
+    [t[1], tt[1], tb[1], b1T[1], b1B[1], b1M[1], b2T[1], b2B[1], b2M[1], b3T[1], b3B[1], b3M[1], s1T[1], s1B[1], s1M[1], s2T[1], s2B[1], s2M[1], s3T[1], s3B[1], s3M[1]]
 
 // Liquidez objetivo: swing no tomado más cercano más allá de un umbral
 f_liq(array<float> pool, float thr, bool up) =>
@@ -250,107 +331,195 @@ f_liq(array<float> pool, float thr, bool up) =>
                 best := p
     best
 
+// Filtro premium/discount u OTE sobre el 50% del OB
+f_zonaOk(float m, bool up, string modo, float top, float bot) =>
+    float rng = top - bot
+    bool ok = true
+    if modo == "Premium/Discount"
+        ok := not na(rng) and rng > 0 and (up ? m < bot + rng * 0.5 : m > bot + rng * 0.5)
+    else if modo == "OTE (62–79%)"
+        ok := not na(rng) and rng > 0 and (up ? (m <= top - rng * 0.62 and m >= top - rng * 0.79) : (m >= bot + rng * 0.62 and m <= bot + rng * 0.79))
+    ok
+
+// Elige el OB más reciente cuyo 50% se toca en esta vela (sin cerrar al otro lado)
+f_pick(array<float> tops, array<float> bots, array<int> tms, array<int> used, bool up, int nS, string modo, float top, float bot) =>
+    float rt  = na
+    float rb  = na
+    int   rtm = na
+    for k = 0 to nS - 1
+        float t  = array.get(tops, k)
+        float b  = array.get(bots, k)
+        int   tm = array.get(tms, k)
+        if na(rtm) and not na(tm) and not array.includes(used, tm)
+            float m = (t + b) / 2
+            bool touch = up ? (low <= m and close >= b) : (high >= m and close <= t)
+            if touch and f_zonaOk(m, up, modo, top, bot)
+                rt  := t
+                rb  := b
+                rtm := tm
+    [rt, rb, rtm]
+
+f_inSes(string ses, string tz) =>
+    not na(time(timeframe.period, ses, tz))
+
 f_trendTxt(int t) =>
     t == 1 ? "Alcista ▲" : t == -1 ? "Bajista ▼" : "Neutral"
 
+bool plano = strategy.position_size == 0
+
 // ---------------------------------------------------------------------
-// 3. CÁLCULOS
+// 3. CÁLCULOS (idénticos en indicador y estrategia)
 // ---------------------------------------------------------------------
 var array<float> lqHiP = array.new<float>()
 var array<int>   lqHiI = array.new<int>()
 var array<float> lqLoP = array.new<float>()
 var array<int>   lqLoI = array.new<int>()
+var array<float> loBT  = array.new<float>()
+var array<float> loBB  = array.new<float>()
+var array<int>   loBTm = array.new<int>()
+var array<float> loST  = array.new<float>()
+var array<float> loSB  = array.new<float>()
+var array<int>   loSTm = array.new<int>()
 
-[trend, evt, evtLvl, evtFrom, bNew, bTop, bBot, bIdx, bTime, sNew, sTop, sBot, sIdx, sTime, bslSw, bslLvl, bslFrom, sslSw, sslLvl, sslFrom, eqhLvl, eqhFrom, eqlLvl, eqlFrom, atrL] = f_smc(intLen, reqSweep, reqFvg, scanMax, eqTol, lqHiP, lqHiI, lqLoP, lqLoI)
+[trend, evt, evtLvl, evtFrom, nBull, nBT, nBB, nBIdx, nBear, nST, nSB, nSIdx, bslSw, bslLvl, bslFrom, sslSw, sslLvl, sslFrom, eqhLvl, eqhFrom, eqlLvl, eqlFrom, atrL, trTopL, trBotL] = f_smc(intLen, reqSweep, reqFvg, scanMax, eqTol, lqHiP, lqHiI, lqLoP, lqLoI, loBT, loBB, loBTm, loST, loSB, loSTm)
 
-[hTrend, hBT, hBB, hBTm, hST, hSB, hSTm] = request.security(syminfo.tickerid, htfTf, f_htf(htfLen, reqSweep, reqFvg, scanMax, eqTol), lookahead = barmerge.lookahead_on)
+[hTrend, hTop, hBot, hB1T, hB1B, hB1M, hB2T, hB2B, hB2M, hB3T, hB3B, hB3M, hS1T, hS1B, hS1M, hS2T, hS2B, hS2M, hS3T, hS3B, hS3M] = request.security(syminfo.tickerid, htfTf, f_htf(htfLen, reqSweep, reqFvg, scanMax, eqTol), lookahead = barmerge.lookahead_on)
 
-float hBMid = (hBT + hBB) / 2
-float hSMid = (hST + hSB) / 2
-bool  tfOk  = timeframe.in_seconds() < timeframe.in_seconds(htfTf)
+array<float> hBTs = array.from(hB1T, hB2T, hB3T)
+array<float> hBBs = array.from(hB1B, hB2B, hB3B)
+array<int>   hBMs = array.from(hB1M, hB2M, hB3M)
+array<float> hSTs = array.from(hS1T, hS2T, hS3T)
+array<float> hSBs = array.from(hS1B, hS2B, hS3B)
+array<int>   hSMs = array.from(hS1M, hS2M, hS3M)
+
+bool tfOk = timeframe.in_seconds() < timeframe.in_seconds(htfTf)
+
+// Killzones
+bool inLon  = f_inSes(kzLon, kzTz)
+bool inNy   = f_inSes(kzNy, kzTz)
+bool inAsia = f_inSes(kzAsia, kzTz)
+bool inKZ   = (kzLonOn and inLon) or (kzNyOn and inNy) or (kzAsiaOn and inAsia)
+bool kzOk   = not usarKZ or inKZ
 
 // ---------------------------------------------------------------------
-// 4. MODELO DE ENTRADA (idéntico al indicador)
+// 4. MODELO DE ENTRADA
+//    1) El precio toca el 50% de un OB activo de la TF superior sin cerrar al otro lado → ARMADO
+//    2) En ≤ maxEspera velas aparece CHoCH a favor en el gráfico → SEÑAL
+//    3) SL detrás del OB (+ margen ATR); TP según modo; filtros R:B, liquidación, zona y killzone
 // ---------------------------------------------------------------------
-var bool armL    = false
-var int  armLBar = na
-var int  armLOb  = na
-var int  usedLOb = na
-var bool armS    = false
-var int  armSBar = na
-var int  armSOb  = na
-var int  usedSOb = na
+var bool  armL    = false
+var int   armLBar = na
+var float armLT   = na
+var float armLB   = na
+var int   armLM   = na
+var bool  armS    = false
+var int   armSBar = na
+var float armST   = na
+var float armSB   = na
+var int   armSM   = na
+var array<int> usadosL = array.new<int>()
+var array<int> usadosS = array.new<int>()
 
-if armL and (na(hBTm) or hBTm != armLOb or close < hBB or bar_index - armLBar > maxEspera)
+if armL and (close < armLB or bar_index - armLBar > maxEspera)
     armL := false
-if armS and (na(hSTm) or hSTm != armSOb or close > hST or bar_index - armSBar > maxEspera)
+if armS and (close > armST or bar_index - armSBar > maxEspera)
     armS := false
 
-bool toqueL = not na(hBTm) and (na(usedLOb) or hBTm != usedLOb) and low <= hBMid and close >= hBB
-bool toqueS = not na(hSTm) and (na(usedSOb) or hSTm != usedSOb) and high >= hSMid and close <= hST
+[pLT, pLB, pLM] = f_pick(hBTs, hBBs, hBMs, usadosL, true, nSlots, modoZona, hTop, hBot)
+[pST, pSB, pSM] = f_pick(hSTs, hSBs, hSMs, usadosS, false, nSlots, modoZona, hTop, hBot)
+bool toqueL = not na(pLM)
+bool toqueS = not na(pSM)
 
 if not armL and toqueL
     armL    := true
     armLBar := bar_index
-    armLOb  := hBTm
+    armLT   := pLT
+    armLB   := pLB
+    armLM   := pLM
 if not armS and toqueS
     armS    := true
     armSBar := bar_index
-    armSOb  := hSTm
+    armST   := pST
+    armSB   := pSB
+    armSM   := pSM
 
 bool confL  = soloChoch ? evt == 2 : evt > 0
 bool confS  = soloChoch ? evt == -2 : evt < 0
 bool sesgoL = not usarSesgo or hTrend == 1
 bool sesgoS = not usarSesgo or hTrend == -1
 
-float slL   = hBB - atrL * slBuf
+float slL   = armLB - atrL * slBuf
 float riskL = close - slL
 float tpL3  = close + rr * riskL
 float liqL  = f_liq(lqHiP, close + minRR * riskL, true)
 float tpL   = modoTP == "3R fijo" ? tpL3 : na(liqL) ? tpL3 : modoTP == "Siguiente liquidez" ? liqL : math.min(tpL3, liqL)
 
-float slS   = hST + atrL * slBuf
+float slS   = armST + atrL * slBuf
 float riskS = slS - close
 float tpS3  = close - rr * riskS
 float liqS  = f_liq(lqLoP, close - minRR * riskS, false)
 float tpS   = modoTP == "3R fijo" ? tpS3 : na(liqS) ? tpS3 : modoTP == "Siguiente liquidez" ? liqS : math.max(tpS3, liqS)
 
+// Filtro de liquidación (aproximado): el stop debe quedar antes del 80% de la distancia de liquidación
 float liqDist = 100.0 / apal * 0.8
 bool okL = riskL > 0 and (tpL - close) / riskL >= minRR and riskL / close * 100 < liqDist
 bool okS = riskS > 0 and (close - tpS) / riskS >= minRR and riskS / close * 100 < liqDist
 
-bool senalL = tfOk and armL and confL and sesgoL and okL
-bool senalS = tfOk and armS and confS and sesgoS and okS
+bool senalL = tfOk and plano and armL and confL and sesgoL and okL and kzOk
+bool senalS = tfOk and plano and armS and confS and sesgoS and okS and kzOk and not senalL
 
 if senalL
-    usedLOb := armLOb
-    armL    := false
+    array.push(usadosL, armLM)
+    if array.size(usadosL) > 100
+        array.shift(usadosL)
+    armL := false
 if senalS
-    usedSOb := armSOb
-    armS    := false
+    array.push(usadosS, armSM)
+    if array.size(usadosS) > 100
+        array.shift(usadosS)
+    armS := false
 
 // ---------------------------------------------------------------------
 // 5. ÓRDENES
 // ---------------------------------------------------------------------
 bool enRango = time >= desde
-bool plano   = strategy.position_size == 0
 
 f_qty(float risk) =>
     float q = strategy.equity * riesgoPct / 100 / risk
     q := math.min(q, strategy.equity * apal / close)
     enteras ? float(math.floor(q)) : q
 
-if enRango and plano and senalL and dirOp != "Solo cortos"
+var float pTP   = na
+var float pRisk = na
+var bool  pBE   = false
+
+if enRango and senalL and dirOp != "Solo cortos"
     float q = f_qty(riskL)
     if q > 0
-        strategy.entry("Largo", strategy.long, qty = q, comment = "OB " + str.tostring(hBB, format.mintick))
+        strategy.entry("Largo", strategy.long, qty = q)
         strategy.exit("Salida L", from_entry = "Largo", stop = slL, limit = tpL, comment_loss = "SL", comment_profit = "TP")
+        pTP   := tpL
+        pRisk := riskL
+        pBE   := false
 
-if enRango and plano and senalS and dirOp != "Solo largos"
+if enRango and senalS and dirOp != "Solo largos"
     float q = f_qty(riskS)
     if q > 0
-        strategy.entry("Corto", strategy.short, qty = q, comment = "OB " + str.tostring(hST, format.mintick))
+        strategy.entry("Corto", strategy.short, qty = q)
         strategy.exit("Salida C", from_entry = "Corto", stop = slS, limit = tpS, comment_loss = "SL", comment_profit = "TP")
+        pTP   := tpS
+        pRisk := riskS
+        pBE   := false
+
+// Break-even: al alcanzar beR × riesgo, el stop pasa a la entrada (+ colchón)
+if usarBE and not pBE and strategy.position_size != 0
+    float ep = strategy.position_avg_price
+    if strategy.position_size > 0 and high >= ep + beR * pRisk
+        pBE := true
+        strategy.exit("Salida L", from_entry = "Largo", stop = ep + beOff * pRisk, limit = pTP, comment_loss = "BE", comment_profit = "TP")
+    if strategy.position_size < 0 and low <= ep - beR * pRisk
+        pBE := true
+        strategy.exit("Salida C", from_entry = "Corto", stop = ep - beOff * pRisk, limit = pTP, comment_loss = "BE", comment_profit = "TP")
 
 // Cierre por tiempo máximo
 if strategy.position_size != 0
@@ -359,13 +528,13 @@ if strategy.position_size != 0
         strategy.close_all(comment = "Tiempo máx.")
 
 // ---------------------------------------------------------------------
-// 6. VISUAL MÍNIMO
+// 6. VISUAL MÍNIMO (OB más reciente de cada lado y setups armados)
 // ---------------------------------------------------------------------
-plot(hBT, "OB alcista techo", color = colBull, style = plot.style_linebr, linewidth = 2)
-plot(hBB, "OB alcista base", color = colBull, style = plot.style_linebr, linewidth = 2)
-plot(hBMid, "OB alcista 50%", color = colTxt, style = plot.style_linebr)
-plot(hST, "OB bajista techo", color = colBear, style = plot.style_linebr, linewidth = 2)
-plot(hSB, "OB bajista base", color = colBear, style = plot.style_linebr, linewidth = 2)
-plot(hSMid, "OB bajista 50%", color = colTxt, style = plot.style_linebr)
+plot(hB1T, "OB alcista techo", color = colBull, style = plot.style_linebr, linewidth = 2)
+plot(hB1B, "OB alcista base", color = colBull, style = plot.style_linebr, linewidth = 2)
+plot((hB1T + hB1B) / 2, "OB alcista 50%", color = colTxt, style = plot.style_linebr)
+plot(hS1T, "OB bajista techo", color = colBear, style = plot.style_linebr, linewidth = 2)
+plot(hS1B, "OB bajista base", color = colBear, style = plot.style_linebr, linewidth = 2)
+plot((hS1T + hS1B) / 2, "OB bajista 50%", color = colTxt, style = plot.style_linebr)
 plotshape(armL, "Armado largo", shape.circle, location.belowbar, color.new(colBull, 40), size = size.tiny)
 plotshape(armS, "Armado corto", shape.circle, location.abovebar, color.new(colBear, 40), size = size.tiny)

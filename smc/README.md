@@ -63,6 +63,26 @@ Puedes desactivar las condiciones 2 y 3 desde los inputs para comparar resultado
 
 ---
 
+## 2b. Mejoras añadidas (todas opcionales y desactivables)
+
+| Mejora | Qué hace exactamente | Valor por defecto |
+|---|---|---|
+| **Varios OB 4H activos** | Vigila hasta 3 OB válidos por dirección, del más reciente al más antiguo. El setup se arma con el más reciente cuyo 50% se toque y que aún no se haya operado. | 3 |
+| **Premium / Discount** | Rango = máximo y mínimo del tramo actual de 4H (desde el último swing). Equilibrio = 50%. Con el filtro activo, el 50% de un OB alcista debe estar en *discount* (debajo del equilibrio) y el de uno bajista en *premium*. | Se dibuja; el filtro está apagado |
+| **OTE (62–79%)** | Banda de retroceso de 0,62 a 0,79 del rango, del lado de la tendencia 4H. Con el filtro activo, el 50% del OB debe caer dentro de la banda. Es más estricto que premium/discount. | Se dibuja; el filtro está apagado |
+| **Breaker Blocks (BRK)** | Cuando un OB del gráfico se mitiga por cierre, cambia de polaridad y pasa a borde discontinuo con la etiqueta *BRK*. Se invalida si vuelve a cerrar al otro lado. | Activado (visual) |
+| **IFVG** | Lo mismo con los FVG: un FVG cerrado por el otro lado se convierte en *Inverse FVG* con su rango original. | Activado (visual) |
+| **Killzones** | Sesiones en hora de Nueva York: Londres 02:00–05:00, Nueva York 07:00–10:00 y Asia 20:00–00:00 (apagada). Se pueden sombrear y usar como filtro de entrada. Los horarios son editables. | Se sombrean; el filtro está apagado |
+| **Break-even** | Al llegar a 1R, el stop pasa a la entrada (con colchón opcional para comisiones). El indicador lo avisa con la etiqueta *SL → BE* y una alerta. | Apagado |
+
+**El indicador ahora gestiona una "posición virtual"**: una operación a la vez, con TP, SL, BE y cierre a las 48 h. Así las señales que ves coinciden con las que opera la estrategia y además recibes alertas de gestión.
+
+**Por qué los filtros vienen apagados:** cada filtro reduce el número de operaciones. Primero haz el backtest **sin** filtros como referencia. Después activa uno cada vez (P/D, OTE, killzones, BE) y quédate solo con los que mejoran el resultado **fuera de muestra**.
+
+Breakers e IFVG son solo visuales y **no** generan entradas en esta versión.
+
+---
+
 ## 3. Longitud de pivote (no la sabías, aquí va la explicación)
 
 Es el número de velas a cada lado que necesita un swing para considerarse confirmado.
@@ -104,12 +124,27 @@ No hay un valor "correcto" universal. **Pruébalo en el backtest** (3, 5 y 8) po
 ## 6. Limitaciones conocidas (honestas)
 
 - **SMC/ICT no tiene evidencia académica de ventaja estadística.** Este script define las reglas de forma objetiva para que **tú lo midas**. No garantiza resultados.
-- De la temporalidad superior se sigue **solo el OB válido más reciente** por dirección. Los OB 4H anteriores sin mitigar se descartan.
+- De la temporalidad superior se vigilan como máximo **3 OB válidos** por dirección (los más recientes).
+- El rango de premium/discount es el del tramo actual de 4H. Otras escuelas usan rangos distintos, como el día anterior o la semana.
+- La posición virtual del indicador asume la entrada al cierre de la vela de señal. Si en una misma vela se tocan el SL y el TP, cuenta como **SL** (criterio conservador).
 - Los swings se confirman con retraso (*N* velas). Es inevitable si no se quiere repintar.
 - Los datos 4H se leen de la **vela 4H ya cerrada** (`[1]` + `lookahead_on`), así que **no repinta**. A cambio, el OB 4H aparece en 15m cuando cierra la vela 4H que lo confirma.
 - La entrada del backtest se llena en la apertura de la vela siguiente a la señal, por lo que el R:B real puede diferir un poco del calculado.
 - La cantidad de historial en 15m depende de tu plan de TradingView.
 - El código **no se ha compilado fuera de TradingView**. Si el editor marca algún error, copia el mensaje exacto y lo corrijo.
 
-## 7. Próximas mejoras opcionales
-Premium/discount y OTE, IFVG y Breaker Blocks, killzones por sesión, mover el stop a break-even en 1R, varios OB 4H activos a la vez, y FVG de 4H como POI alternativo.
+## 7. Cómo pegar el código desde un iPhone
+
+La app de TradingView para iPhone **no** tiene editor de Pine. El código se pega desde la **web** (en Safari, en modo escritorio) o desde un ordenador. Una vez guardado, el script queda en tu cuenta y lo puedes usar en la app.
+
+1. **Copia el código.** Usa la página con el botón "Copiar", o abre el archivo `.pine` en GitHub y pulsa el botón de copiar.
+2. Abre **Safari** y entra en `tradingview.com/chart` con tu cuenta.
+3. Pulsa **"aA"** en la barra de direcciones y elige **"Solicitar sitio web de escritorio"**.
+4. En la parte inferior del gráfico abre la pestaña **"Pine Editor"** (Editor de Pine).
+5. Borra el código de ejemplo: mantén pulsado dentro del editor, toca **"Seleccionar todo"** y borra.
+6. Mantén pulsado y toca **"Pegar"**.
+7. Pulsa **"Guardar"**, ponle nombre (por ejemplo *SMC Pro Indicador*) y luego **"Añadir al gráfico"**.
+8. Repite los pasos 4 a 7 con la estrategia, en un script nuevo (menú del editor → *Nuevo* → *Estrategia*).
+9. En la **app**: abre un gráfico, entra en **Indicadores**, busca la sección **Mis scripts** y añádelos. Pon el gráfico en **15m**.
+
+Si el editor marca un error en rojo, toca la línea para ver el mensaje y mándamelo tal cual.
